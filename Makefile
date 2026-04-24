@@ -2,7 +2,7 @@ PREFIX ?= /usr/local
 
 all: uitocc uitocc-ax-text uitocc-send
 
-uitocc: cli.ts daemon.ts mcp-server.ts
+uitocc: cli.ts mcp-server.ts
 	bun build --compile cli.ts --outfile uitocc
 
 uitocc-ax-text: ax_text.swift
