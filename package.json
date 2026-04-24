@@ -1,0 +1,12 @@
+{
+  "name": "uitocc",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "daemon": "bun daemon.ts",
+    "mcp": "bun mcp-server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}

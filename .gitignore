@@ -1,0 +1,5 @@
+node_modules/
+ax_text
+send
+*.db
+.claude/
