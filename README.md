@@ -33,12 +33,7 @@ Run from a keyboard shortcut (e.g. via Raycast or macOS Shortcuts):
 uitocc send
 ```
 
-This captures:
-- The frontmost app and window title
-- All visible text in the focused window
-- Text at the cursor position
-
-The data is sent as a channel event to Claude Code.
+Captures the frontmost app's window title, visible text, and cursor context, then sends it as a channel event to Claude Code.
 
 ## Architecture
 
@@ -49,8 +44,8 @@ The data is sent as a channel event to Claude Code.
 └─────────────┘    └─────────────┘
 ```
 
-- **uitocc mcp** — MCP server that relays screen context as channel notifications to Claude Code
-- **uitocc-send** — Captures current window text and cursor context via macOS Accessibility API
+- **uitocc mcp** — MCP server that relays context as channel notifications to Claude Code
+- **uitocc send** — Captures current window text and cursor context via Accessibility API
 - **uitocc-ax-text** — Extracts visible text from the frontmost app (used by send)
 
 ## License

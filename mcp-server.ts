@@ -8,27 +8,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { homedir } from "os";
 import { join } from "path";
-import { existsSync, unlinkSync, readFileSync } from "fs";
-
-// --- Paths ---
+import { existsSync, unlinkSync } from "fs";
 
 const DATA_DIR = join(homedir(), "Library", "Application Support", "uitocc");
 const CHANNEL_EVENT_PATH = join(DATA_DIR, "channel_event.json");
 
-// --- Types ---
-
-interface ChannelEvent {
-  timestamp: string;
-  app: string;
-  windowTitle: string;
-  cursorText?: string;
-  contextTexts: string[];
-}
-
-// --- MCP Server ---
-
 const mcp = new Server(
-  { name: "uitocc", version: "0.2.0" },
+  { name: "uitocc", version: "0.3.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
@@ -41,35 +27,26 @@ const mcp = new Server(
   }
 );
 
-// --- Tools ---
-
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [],
-}));
+mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [] }));
 
 mcp.setRequestHandler(CallToolRequestSchema, async () => ({
   content: [{ type: "text" as const, text: "Unknown tool" }],
 }));
 
-// --- Channel Event Polling ---
-
 async function pollChannelEvents() {
   while (true) {
     await Bun.sleep(1000);
-
     if (!existsSync(CHANNEL_EVENT_PATH)) continue;
 
     try {
-      const raw = readFileSync(CHANNEL_EVENT_PATH, "utf-8");
+      const raw = await Bun.file(CHANNEL_EVENT_PATH).text();
       unlinkSync(CHANNEL_EVENT_PATH);
-      const event: ChannelEvent = JSON.parse(raw);
+      const event = JSON.parse(raw);
 
       let content = `User is looking at: **${event.app}** — "${event.windowTitle}"`;
-      if (event.cursorText) {
-        content += `\n\nText at cursor:\n${event.cursorText}`;
-      }
-      if (event.contextTexts.length > 0) {
-        content += `\n\nVisible text:\n${event.contextTexts.map((t) => `- ${t}`).join("\n")}`;
+      if (event.cursorText) content += `\n\nText at cursor:\n${event.cursorText}`;
+      if (event.contextTexts?.length > 0) {
+        content += `\n\nVisible text:\n${event.contextTexts.map((t: string) => `- ${t}`).join("\n")}`;
       }
 
       await mcp.notification({
@@ -84,13 +61,9 @@ async function pollChannelEvents() {
           },
         },
       });
-    } catch {
-      // Skip on error
-    }
+    } catch {}
   }
 }
-
-// --- Main ---
 
 await mcp.connect(new StdioServerTransport());
 pollChannelEvents();

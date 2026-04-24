@@ -23,6 +23,6 @@ uninstall:
 	rm -f $(PREFIX)/bin/uitocc-send
 
 clean:
-	rm -f uitocc uitocc-ax-text uitocc-send ax_text send uitocc-daemon uitocc-mcp
+	rm -f uitocc uitocc-ax-text uitocc-send
 
 .PHONY: all install uninstall clean
