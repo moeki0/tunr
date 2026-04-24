@@ -3,8 +3,10 @@
  * uitocc audio daemon — Continuously records system audio from BlackHole
  * using ffmpeg in 30-second rotating segments.
  *
- * Prerequisites:
- *   brew install blackhole-2ch ffmpeg
+ * Dependencies (auto-installed on first run):
+ *   ffmpeg, whisper-cpp, blackhole-2ch
+ *
+ * Manual setup required:
  *   Set up Multi-Output Device in Audio MIDI Setup
  */
 
@@ -16,6 +18,28 @@ const AUDIO_DIR = join(homedir(), "Library", "Application Support", "uitocc", "a
 const SEGMENT_SECONDS = 30;
 const SEGMENT_WRAP = 4; // keep ~2 minutes of audio
 
+// Auto-install dependencies
+async function ensureDeps() {
+  const deps: { name: string; check: string[]; install: string[] }[] = [
+    { name: "ffmpeg", check: ["which", "ffmpeg"], install: ["brew", "install", "ffmpeg"] },
+    { name: "whisper-cpp", check: ["which", "whisper-cli"], install: ["brew", "install", "whisper-cpp"] },
+    { name: "BlackHole", check: ["ls", "/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver"], install: ["brew", "install", "--cask", "blackhole-2ch"] },
+  ];
+
+  for (const dep of deps) {
+    const result = Bun.spawnSync(dep.check, { stdout: "ignore", stderr: "ignore" });
+    if (result.exitCode !== 0) {
+      console.log(`Installing ${dep.name}...`);
+      const install = Bun.spawnSync(dep.install, { stdout: "inherit", stderr: "inherit" });
+      if (install.exitCode !== 0) {
+        console.error(`Failed to install ${dep.name}. Run manually: ${dep.install.join(" ")}`);
+        process.exit(1);
+      }
+    }
+  }
+}
+
+await ensureDeps();
 mkdirSync(AUDIO_DIR, { recursive: true });
 
 // Find BlackHole device index

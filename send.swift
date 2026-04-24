@@ -127,7 +127,7 @@ struct ChannelEvent: Codable {
 
 // Transcribe recent audio if available
 var audioTranscription: String? = nil
-let transcribePath = (CommandLine.arguments[0] as NSString).deletingLastPathComponent + "/uitocc-transcribe"
+let transcribePath = (CommandLine.arguments[0] as NSString).deletingLastPathComponent + "/uitocc-transcribe.sh"
 if FileManager.default.fileExists(atPath: transcribePath) {
     let transcribeProc = Process()
     transcribeProc.executableURL = URL(fileURLWithPath: transcribePath)

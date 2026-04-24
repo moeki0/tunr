@@ -1,6 +1,6 @@
 PREFIX ?= /usr/local
 
-all: uitocc uitocc-ax-text uitocc-send uitocc-transcribe
+all: uitocc uitocc-ax-text uitocc-send
 
 uitocc: cli.ts mcp-server.ts audio-daemon.ts
 	bun build --compile cli.ts --outfile uitocc
@@ -11,23 +11,20 @@ uitocc-ax-text: ax_text.swift
 uitocc-send: send.swift
 	swiftc send.swift -o uitocc-send -O
 
-uitocc-transcribe: transcribe.swift
-	swiftc transcribe.swift -o uitocc-transcribe -O -framework Speech
-
 install: all
 	install -d $(PREFIX)/bin
 	install -m 755 uitocc $(PREFIX)/bin/uitocc
 	install -m 755 uitocc-ax-text $(PREFIX)/bin/uitocc-ax-text
 	install -m 755 uitocc-send $(PREFIX)/bin/uitocc-send
-	install -m 755 uitocc-transcribe $(PREFIX)/bin/uitocc-transcribe
+	install -m 755 transcribe.sh $(PREFIX)/bin/uitocc-transcribe.sh
 
 uninstall:
 	rm -f $(PREFIX)/bin/uitocc
 	rm -f $(PREFIX)/bin/uitocc-ax-text
 	rm -f $(PREFIX)/bin/uitocc-send
-	rm -f $(PREFIX)/bin/uitocc-transcribe
+	rm -f $(PREFIX)/bin/uitocc-transcribe.sh
 
 clean:
-	rm -f uitocc uitocc-ax-text uitocc-send uitocc-transcribe
+	rm -f uitocc uitocc-ax-text uitocc-send
 
 .PHONY: all install uninstall clean
