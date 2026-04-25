@@ -265,19 +265,16 @@ function App() {
   useEffect(() => {
     let active = true;
     const statusPath = join(DATA_DIR, "audio_channel_status.json");
-    async function pollStatus() {
-      while (active) {
-        try {
-          if (existsSync(statusPath)) {
-            const data = JSON.parse(readFileSync(statusPath, "utf-8"));
-            setAudioChannelActive(!!data.enabled);
-          }
-        } catch {}
-        await Bun.sleep(2000);
-      }
-    }
-    pollStatus();
-    return () => { active = false; };
+    const tid = setInterval(async () => {
+      try {
+        const f = Bun.file(statusPath);
+        if (await f.exists()) {
+          const data = JSON.parse(await f.text());
+          setAudioChannelActive(!!data.enabled);
+        }
+      } catch {}
+    }, 2000);
+    return () => clearInterval(tid);
   }, []);
 
   // Audio capture & transcription
