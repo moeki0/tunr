@@ -1,4 +1,5 @@
 PREFIX ?= /usr/local
+SWIFT_TARGET ?= arm64-apple-macos14.0
 
 all: uitocc uitocc-ax-text uitocc-send uitocc-embed
 
@@ -6,13 +7,13 @@ uitocc: cli.ts mcp-server.ts daemon.tsx
 	bun build --compile cli.ts --outfile uitocc
 
 uitocc-ax-text: ax_text.swift
-	swiftc ax_text.swift -o uitocc-ax-text -O
+	swiftc ax_text.swift -o uitocc-ax-text -O -target $(SWIFT_TARGET)
 
 uitocc-send: send.swift
-	swiftc send.swift -o uitocc-send -O
+	swiftc send.swift -o uitocc-send -O -target $(SWIFT_TARGET)
 
 uitocc-embed: embed.swift
-	swiftc embed.swift -o uitocc-embed -O
+	swiftc embed.swift -o uitocc-embed -O -target $(SWIFT_TARGET)
 
 install: all
 	install -d $(PREFIX)/bin
