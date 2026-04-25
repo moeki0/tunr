@@ -334,7 +334,7 @@ function App() {
               const chunk = JSON.parse(line);
               const mp = join(homedir(), ".cache", "whisper-cpp-small.bin");
               const wp = Bun.spawnSync([
-                "whisper-cli", "-m", mp, "-l", "ja", "-f", chunk.file, "-np", "-nt",
+                "whisper-cli", "-m", mp, "-l", "auto", "-f", chunk.file, "-np", "-nt",
               ], { stdout: "pipe", stderr: "pipe" });
               const transcript = wp.stdout.toString().trim();
               try { unlinkSync(chunk.file); } catch {}
