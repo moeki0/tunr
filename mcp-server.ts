@@ -15,11 +15,11 @@ const DATA_DIR = join(homedir(), "Library", "Application Support", "tunr");
 const CHANNEL_EVENT_PATH = join(DATA_DIR, "channel_event.json"); // user_send events
 const DB_PATH = join(DATA_DIR, "tunr.db");
 
-function openDb(): Database | null {
+function openDb(writable = false): Database | null {
   try {
     if (!existsSync(DB_PATH)) return null;
-    const db = new Database(DB_PATH, { readonly: false });
-    db.run("PRAGMA journal_mode=WAL");
+    const db = new Database(DB_PATH, { readonly: !writable });
+    if (writable) db.run("PRAGMA journal_mode=WAL");
     return db;
   } catch {
     return null;
@@ -239,7 +239,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "list_channels") {
     const db = openDb();
     if (!db) {
-      return { content: [{ type: "text" as const, text: "No channels available. Is the watch daemon running?" }] };
+      return { content: [{ type: "text" as const, text: `No channels available. DB_PATH=${DB_PATH} exists=${existsSync(DB_PATH)}` }] };
     }
     try {
       const channels = db.prepare(
@@ -263,7 +263,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   if (name === "subscribe") {
     const channel = (args as any).channel as string;
-    const db = openDb();
+    const db = openDb(true);
     if (!db) {
       return { content: [{ type: "text" as const, text: "Database not available. Is the watch daemon running?" }] };
     }
@@ -282,7 +282,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   if (name === "unsubscribe") {
     const channel = (args as any).channel as string;
-    const db = openDb();
+    const db = openDb(true);
     if (!db) {
       return { content: [{ type: "text" as const, text: "Database not available." }] };
     }
