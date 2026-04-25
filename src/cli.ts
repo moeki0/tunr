@@ -36,7 +36,8 @@ switch (command) {
   }
   case "--version":
   case "-v":
-    console.log((await import("../package.json")).version);
+    const { VERSION } = await import("./lib/constants");
+    console.log(VERSION);
     break;
   default:
     console.log(`tunr — Screen context provider for Claude Code

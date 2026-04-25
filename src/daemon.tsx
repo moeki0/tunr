@@ -13,7 +13,7 @@ import { unlinkSync } from "fs";
 
 import type { TrackedSource, Capture, DayCount } from "./lib/types";
 import type { View, SettingsTab, FocusArea } from "./lib/types";
-import { DB_PATH, SETTINGS_PATH, AUDIO_DIR, AUDIO_SOURCE_KEY, POLL_MS, savedAudioChunkSec, savedSettings } from "./lib/constants";
+import { VERSION, DB_PATH, SETTINGS_PATH, AUDIO_DIR, AUDIO_SOURCE_KEY, POLL_MS, savedAudioChunkSec, savedSettings } from "./lib/constants";
 import { db, insertStmt, insertAudioStmt, localDateStr, getRecentCaptures, getDailyCounts, getHourlyCountsForDate, getCapturesForDate } from "./lib/db";
 import { getChannels, getActiveSubscriptions } from "./lib/rules";
 import { generateEmbedding, getAllWindows, windowKey, cosineSimilarity } from "./lib/capture";
@@ -120,9 +120,7 @@ function App() {
   // Update check
   const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
   useEffect(() => {
-    import("../../package.json").then(pkg =>
-      checkForUpdate(pkg.version).then(setUpdateAvailable)
-    );
+    checkForUpdate(VERSION).then(setUpdateAvailable);
   }, []);
 
   // Storage size
