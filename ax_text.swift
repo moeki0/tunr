@@ -87,7 +87,7 @@ if CommandLine.arguments.contains("--all") {
         for (idx, win) in windows.enumerated() {
             let title = axValue(win, kAXTitleAttribute) as? String ?? ""
             var texts: [String] = []
-            collectTexts(win, depth: 0, maxDepth: 5, results: &texts, limit: 50)
+            collectTexts(win, depth: 0, maxDepth: 30, results: &texts, limit: 500)
             entries.append([
                 "pid": Int(pid),
                 "window_index": idx,

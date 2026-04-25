@@ -194,7 +194,7 @@ function App() {
         for (const tw of allowedWindows) {
           const key = windowKey(tw);
           const w = foundMap.get(key);
-          if (!w || w.texts.length === 0) continue;
+          if (!w) continue;
           const textForEmbed = `${w.app} ${w.title} ${w.texts.slice(0, 10).join(" ")}`.slice(0, 1000);
           const emb = generateEmbedding(textForEmbed);
           insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, JSON.stringify(w.texts), emb);
