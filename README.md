@@ -10,19 +10,16 @@ brew install moeki0/tap/uitocc
 
 Grant Accessibility and Screen Recording permissions to your terminal app.
 
-Register the MCP server and enable channels:
+Register the MCP server:
 
 ```bash
 claude mcp add -s user uitocc -- uitocc mcp
 ```
 
-```json5
-// ~/.claude/settings.json
-{
-  "experimentalFeatures": {
-    "channels": true
-  }
-}
+Start Claude Code with channels enabled:
+
+```bash
+claude --dangerously-load-development-channels server:uitocc
 ```
 
 ## Usage
