@@ -306,11 +306,16 @@ function App() {
   const audioEnabledRef = useRef(true);
   const [audioStatus, setAudioStatus] = useState<string>("starting");
   const [lastTranscript, setLastTranscript] = useState<string>("");
+  const [audioChunkSec, setAudioChunkSec] = useState(10);
+  const audioChunkRef = useRef(10);
   const audioProcRef = useRef<any>(null);
 
   useEffect(() => {
     audioEnabledRef.current = audioEnabled;
   }, [audioEnabled]);
+  useEffect(() => {
+    audioChunkRef.current = audioChunkSec;
+  }, [audioChunkSec]);
 
   useEffect(() => {
     let active = true;
@@ -332,7 +337,7 @@ function App() {
         }
 
         setAudioStatus("recording");
-        const proc = Bun.spawn([audioBin, AUDIO_DIR, "10"], {
+        const proc = Bun.spawn([audioBin, AUDIO_DIR, String(audioChunkRef.current)], {
           stdout: "pipe",
           stderr: "pipe",
         });
@@ -442,6 +447,16 @@ function App() {
         Bun.write(join(DATA_DIR, "channel_status.json"), JSON.stringify({ tv: tvChannelActive, radio: next }));
         return next;
       });
+      return;
+    }
+
+    // Audio chunk interval
+    if (input === "[") {
+      setAudioChunkSec((prev) => Math.max(5, prev - 5));
+      return;
+    }
+    if (input === "]") {
+      setAudioChunkSec((prev) => Math.min(60, prev + 5));
       return;
     }
 
@@ -628,7 +643,7 @@ function App() {
               {radioChannelActive ? "●" : "○"} RADIO
             </Text>
             <Text color={radioChannelActive ? "cyan" : "gray"}>
-              {"  "}{radioChannelActive ? "ON AIR" : "STANDBY"}
+              {"  "}{radioChannelActive ? "ON AIR" : "STANDBY"}  [{audioChunkSec}s]
             </Text>
           </Box>
           {broadcastLog.length > 0 ? (
@@ -646,7 +661,7 @@ function App() {
       {/* Controls */}
       <Box paddingX={1} marginTop={0}>
         <Text color="green">
-          [↑↓] NAV  [T] TOGGLE FEED  [A] MIC {audioEnabled ? "OFF" : "ON"}  [1] TV {tvChannelActive ? "OFF" : "ON"}  [2] RADIO {radioChannelActive ? "OFF" : "ON"}  [Q] QUIT
+          [↑↓] NAV  [T] TOGGLE FEED  [A] MIC {audioEnabled ? "OFF" : "ON"}  [1] TV {tvChannelActive ? "OFF" : "ON"}  [2] RADIO {radioChannelActive ? "OFF" : "ON"}  [-/+] INTERVAL  [Q] QUIT
         </Text>
       </Box>
     </Box>

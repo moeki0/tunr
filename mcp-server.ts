@@ -400,6 +400,15 @@ async function pollChannelEvents() {
   while (true) {
     await Bun.sleep(1000);
 
+    // Sync channel status from TUI
+    if (existsSync(CHANNEL_STATUS_PATH)) {
+      try {
+        const data = JSON.parse(await Bun.file(CHANNEL_STATUS_PATH).text());
+        if (data.tv !== undefined) tvChannelEnabled = data.tv;
+        if (data.radio !== undefined) radioChannelEnabled = data.radio;
+      } catch {}
+    }
+
     // Check for screen events
     if (existsSync(CHANNEL_EVENT_PATH)) {
       try {
