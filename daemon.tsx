@@ -133,6 +133,14 @@ function App() {
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [recordCount, setRecordCount] = useState(0);
 
+  // History logs
+  const [screenLog, setScreenLog] = useState<string[]>([]);
+  const [audioLog, setAudioLog] = useState<string[]>([]);
+  const [broadcastLog, setBroadcastLog] = useState<string[]>([]);
+  const addScreenLog = (entry: string) => setScreenLog((prev) => [entry, ...prev].slice(0, 5));
+  const addAudioLog = (entry: string) => setAudioLog((prev) => [entry, ...prev].slice(0, 5));
+  const addBroadcastLog = (entry: string) => setBroadcastLog((prev) => [entry, ...prev].slice(0, 5));
+
   // Keep ref in sync with state
   useEffect(() => {
     windowsRef.current = windows;
@@ -238,6 +246,19 @@ function App() {
           const emb = generateEmbedding(textForEmbed);
           insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, textsJson, emb, screenshotPath);
           setRecordCount((c) => c + 1);
+          const time = ts.slice(11, 19);
+          addScreenLog(`${time} ${w.app} — ${(w.title || "").slice(0, 30)}`);
+          // TV channel event
+          if (tvChannelRef.current) {
+            const tvEventPath = join(DATA_DIR, "channel_tv_event.json");
+            await Bun.write(tvEventPath, JSON.stringify({
+              timestamp: ts,
+              app: w.app,
+              windowTitle: w.title,
+              texts: uniqueTexts,
+            }));
+            addBroadcastLog(`${time} TV → ${w.app} — ${(w.title || "").slice(0, 20)}`);
+          }
         }
       }
     }
@@ -260,17 +281,20 @@ function App() {
     return () => { active = false; };
   }, []);
 
-  // Audio channel status (from MCP server)
-  const [audioChannelActive, setAudioChannelActive] = useState(false);
+  // Channel status (TV = screen, RADIO = audio)
+  const [tvChannelActive, setTvChannelActive] = useState(false);
+  const [radioChannelActive, setRadioChannelActive] = useState(false);
+  const tvChannelRef = useRef(false);
+  useEffect(() => { tvChannelRef.current = tvChannelActive; }, [tvChannelActive]);
   useEffect(() => {
-    let active = true;
-    const statusPath = join(DATA_DIR, "audio_channel_status.json");
+    const statusPath = join(DATA_DIR, "channel_status.json");
     const tid = setInterval(async () => {
       try {
         const f = Bun.file(statusPath);
         if (await f.exists()) {
           const data = JSON.parse(await f.text());
-          setAudioChannelActive(!!data.enabled);
+          if (data.tv !== undefined) setTvChannelActive(!!data.tv);
+          if (data.radio !== undefined) setRadioChannelActive(!!data.radio);
         }
       } catch {}
     }, 2000);
@@ -342,12 +366,17 @@ function App() {
               if (transcript) {
                 insertAudioStmt.run(chunk.timestamp, chunk.file, transcript);
                 setLastTranscript(transcript.slice(0, 80));
+                const time = chunk.timestamp.slice(11, 19);
+                addAudioLog(`${time} ${transcript.slice(0, 40)}`);
                 // Write channel event for MCP server
                 const audioEventPath = join(DATA_DIR, "channel_audio_event.json");
                 await Bun.write(audioEventPath, JSON.stringify({
                   timestamp: chunk.timestamp,
                   transcript,
                 }));
+                if (radioChannelActive) {
+                  addBroadcastLog(`${time} RADIO → ${transcript.slice(0, 25)}`);
+                }
               }
             } catch {}
           }
@@ -393,6 +422,26 @@ function App() {
     // Toggle audio
     if (input === "a" || input === "A") {
       setAudioEnabled((prev) => !prev);
+      return;
+    }
+
+    // Toggle TV channel
+    if (input === "1") {
+      setTvChannelActive((prev: boolean) => {
+        const next = !prev;
+        Bun.write(join(DATA_DIR, "channel_status.json"), JSON.stringify({ tv: next, radio: radioChannelActive }));
+        return next;
+      });
+      return;
+    }
+
+    // Toggle RADIO channel
+    if (input === "2") {
+      setRadioChannelActive((prev: boolean) => {
+        const next = !prev;
+        Bun.write(join(DATA_DIR, "channel_status.json"), JSON.stringify({ tv: tvChannelActive, radio: next }));
+        return next;
+      });
       return;
     }
 
@@ -469,86 +518,135 @@ function App() {
         </Text>
       </Box>
 
-      {/* Status bar */}
-      <Box paddingX={1} marginTop={0} gap={2}>
-        <Text color={allowed.length > 0 ? "green" : "yellow"}>
-          FEEDS: {allowed.length}/{configured.length}
-        </Text>
-        <Text color="green">
-          {recBlink ? "●" : "○"} REC {recordCount}
-        </Text>
-        <Text color={audioEnabled ? (audioStatus === "recording" ? "green" : "yellow") : "red"}>
-          {audioEnabled && audioStatus === "recording" ? (recBlink ? "●" : "○") : "○"} MIC {audioEnabled ? audioStatus.toUpperCase() : "OFF"}
-        </Text>
-        <Text color={audioChannelActive ? "cyan" : "gray"}>
-          CH {audioChannelActive ? "LIVE" : "OFF"}
-        </Text>
-        <Text color="green">SYS ONLINE</Text>
-      </Box>
+      {/* Main panels */}
+      <Box flexDirection="column" marginTop={0} flexGrow={1}>
 
-      {/* Feed list */}
-      <Box flexDirection="column" borderStyle="single" borderColor="green" marginTop={0} paddingX={1}>
-        <Text color="green" dimColor> MONITORED FEEDS </Text>
-        {configured.length > 0 ? (
-          <Box flexDirection="column">
-            {configured.map((w, i) => {
-              const isSelected = !pendingKey && i === selectedIndex;
-              const isAllowed = w.permission === "allowed";
-              const camId = String(i + 1).padStart(2, "0");
-              return (
-                <Box key={windowKey(w)}>
-                  <Text color={isSelected ? "cyan" : "green"}>
-                    {isSelected ? "▸ " : "  "}
-                  </Text>
-                  <Text color={isAllowed ? "green" : "red"}>
-                    CAM-{camId}
-                  </Text>
-                  <Text color={isAllowed ? "green" : "red"}>
-                    {isAllowed ? " [LIVE]  " : " [----]  "}
-                  </Text>
-                  <Text color={isAllowed ? "white" : "gray"} dimColor={!isAllowed}>
-                    {w.app}
-                  </Text>
-                  <Text color="gray" dimColor>
-                    {" "}| {(w.title || "untitled").slice(0, 50)}
-                  </Text>
-                </Box>
-              );
-            })}
+        {/* ═══ RECORDING ═══ */}
+        <Box flexDirection="column" borderStyle="single" borderColor="green" paddingX={1}>
+          <Text color="green" bold> RECORDING </Text>
+
+          {/* SCREEN */}
+          <Box flexDirection="column" borderStyle="single" borderColor="green" marginTop={0} paddingX={1}>
+            <Box gap={2}>
+              <Text color="green" bold> SCREEN </Text>
+              <Text color={allowed.length > 0 ? "green" : "yellow"}>
+                FEEDS: {allowed.length}/{configured.length}
+              </Text>
+              <Text color="green">
+                {recBlink ? "●" : "○"} REC {recordCount}
+              </Text>
+            </Box>
+            {configured.length > 0 ? (
+              <Box flexDirection="column">
+                {configured.map((w, i) => {
+                  const isSelected = !pendingKey && i === selectedIndex;
+                  const isAllowed = w.permission === "allowed";
+                  const camId = String(i + 1).padStart(2, "0");
+                  return (
+                    <Box key={windowKey(w)}>
+                      <Text color={isSelected ? "cyan" : "green"}>
+                        {isSelected ? "▸ " : "  "}
+                      </Text>
+                      <Text color={isAllowed ? "green" : "red"}>
+                        CAM-{camId}
+                      </Text>
+                      <Text color={isAllowed ? "green" : "red"}>
+                        {isAllowed ? " [LIVE]  " : " [----]  "}
+                      </Text>
+                      <Text color={isAllowed ? "white" : "gray"}>
+                        {w.app}
+                      </Text>
+                      <Text color="gray">
+                        {" "}| {(w.title || "untitled").slice(0, 40)}
+                      </Text>
+                    </Box>
+                  );
+                })}
+              </Box>
+            ) : (
+              <Text color="yellow"> NO FEEDS DETECTED </Text>
+            )}
+            {/* Alert panel */}
+            {pendingWindow ? (
+              <Box flexDirection="column" marginTop={0}>
+                <Text color="yellow" bold> ⚠ UNIDENTIFIED FEED </Text>
+                <Text color="white">
+                  {"  "}{pendingWindow.app}
+                  <Text color="gray"> | {pendingWindow.title || "untitled"}</Text>
+                </Text>
+                <Text>
+                  {"  "}AUTHORIZE? <Text color="green" bold>[Y]</Text> GRANT  <Text color="red" bold>[N]</Text> DENY
+                </Text>
+              </Box>
+            ) : null}
+            {screenLog.length > 0 ? (
+              <Box flexDirection="column" marginTop={0}>
+                <Text color="gray"> RECENT </Text>
+                {screenLog.map((entry, i) => (
+                  <Text key={i} color="gray">  {entry}</Text>
+                ))}
+              </Box>
+            ) : null}
           </Box>
-        ) : (
-          <Text color="yellow"> NO FEEDS DETECTED </Text>
-        )}
-      </Box>
 
-      {/* Alert panel */}
-      {pendingWindow ? (
-        <Box flexDirection="column" borderStyle="single" borderColor="yellow" marginTop={0} paddingX={1}>
-          <Text color="yellow" bold> ⚠ UNIDENTIFIED FEED </Text>
-          <Text color="white">
-            {"  "}{pendingWindow.app}
-            <Text color="gray"> | {pendingWindow.title || "untitled"}</Text>
-          </Text>
-          <Text>
-            {"  "}AUTHORIZE? <Text color="green" bold>[Y]</Text> GRANT  <Text color="red" bold>[N]</Text> DENY
-          </Text>
+          {/* AUDIO */}
+          <Box flexDirection="column" borderStyle="single" borderColor={audioEnabled ? "green" : "gray"} marginTop={0} paddingX={1}>
+            <Box gap={2}>
+              <Text color={audioEnabled ? "green" : "gray"} bold> AUDIO </Text>
+              <Text color={audioEnabled ? (audioStatus === "recording" ? "green" : "yellow") : "red"}>
+                {audioEnabled && audioStatus === "recording" ? (recBlink ? "●" : "○") : "○"} MIC {audioEnabled ? audioStatus.toUpperCase() : "OFF"}
+              </Text>
+            </Box>
+            {audioEnabled && lastTranscript ? (
+              <Text color="green"> {`> ${lastTranscript}`}</Text>
+            ) : (
+              <Text color="gray"> {audioEnabled ? "LISTENING..." : "DISABLED"}</Text>
+            )}
+            {audioLog.length > 0 ? (
+              <Box flexDirection="column" marginTop={0}>
+                <Text color="gray"> RECENT </Text>
+                {audioLog.map((entry, i) => (
+                  <Text key={i} color="gray">  {entry}</Text>
+                ))}
+              </Box>
+            ) : null}
+          </Box>
         </Box>
-      ) : null}
 
-      {/* Audio feed */}
-      <Box flexDirection="column" borderStyle="single" borderColor={audioEnabled ? "green" : "gray"} marginTop={0} paddingX={1}>
-        <Text color={audioEnabled ? "green" : "gray"} dimColor={!audioEnabled}> AUDIO INTERCEPT </Text>
-        {audioEnabled && lastTranscript ? (
-          <Text color="green"> {`> ${lastTranscript}`}</Text>
-        ) : (
-          <Text color="gray" dimColor> {audioEnabled ? "LISTENING..." : "DISABLED"}</Text>
-        )}
+        {/* ═══ BROADCAST ═══ */}
+        <Box flexDirection="column" borderStyle="single" borderColor={tvChannelActive || radioChannelActive ? "cyan" : "gray"} paddingX={1}>
+          <Text color={tvChannelActive || radioChannelActive ? "cyan" : "gray"} bold> BROADCAST </Text>
+          <Box flexDirection="column" marginTop={0}>
+            <Text color={tvChannelActive ? "cyan" : "gray"}>
+              {tvChannelActive ? "●" : "○"} TV
+            </Text>
+            <Text color={tvChannelActive ? "cyan" : "gray"}>
+              {"  "}{tvChannelActive ? "ON AIR" : "STANDBY"}
+            </Text>
+            <Text> </Text>
+            <Text color={radioChannelActive ? "cyan" : "gray"}>
+              {radioChannelActive ? "●" : "○"} RADIO
+            </Text>
+            <Text color={radioChannelActive ? "cyan" : "gray"}>
+              {"  "}{radioChannelActive ? "ON AIR" : "STANDBY"}
+            </Text>
+          </Box>
+          {broadcastLog.length > 0 ? (
+            <Box flexDirection="column" marginTop={0}>
+              <Text color="gray"> LOG </Text>
+              {broadcastLog.map((entry, i) => (
+                <Text key={i} color="gray">  {entry}</Text>
+              ))}
+            </Box>
+          ) : null}
+        </Box>
+
       </Box>
 
       {/* Controls */}
       <Box paddingX={1} marginTop={0}>
-        <Text color="green" dimColor>
-          [↑↓] NAV  [T] TOGGLE FEED  [A] MIC {audioEnabled ? "OFF" : "ON"}  [Q] SHUTDOWN
+        <Text color="green">
+          [↑↓] NAV  [T] TOGGLE FEED  [A] MIC {audioEnabled ? "OFF" : "ON"}  [1] TV {tvChannelActive ? "OFF" : "ON"}  [2] RADIO {radioChannelActive ? "OFF" : "ON"}  [Q] QUIT
         </Text>
       </Box>
     </Box>

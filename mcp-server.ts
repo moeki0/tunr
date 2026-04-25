@@ -13,7 +13,9 @@ import { existsSync, unlinkSync, readFileSync } from "fs";
 
 const DATA_DIR = join(homedir(), "Library", "Application Support", "uitocc");
 const CHANNEL_EVENT_PATH = join(DATA_DIR, "channel_event.json");
-const CHANNEL_AUDIO_EVENT_PATH = join(DATA_DIR, "channel_audio_event.json");
+const CHANNEL_TV_EVENT_PATH = join(DATA_DIR, "channel_tv_event.json");
+const CHANNEL_RADIO_EVENT_PATH = join(DATA_DIR, "channel_audio_event.json");
+const CHANNEL_STATUS_PATH = join(DATA_DIR, "channel_status.json");
 const DB_PATH = join(DATA_DIR, "uitocc.db");
 
 function openDb(): Database | null {
@@ -64,7 +66,14 @@ function blobToFloat64Array(blob: Buffer): Float64Array {
   return arr;
 }
 
-let audioChannelEnabled = false;
+let tvChannelEnabled = false;
+let radioChannelEnabled = false;
+
+async function syncChannelStatus() {
+  try {
+    await Bun.write(CHANNEL_STATUS_PATH, JSON.stringify({ tv: tvChannelEnabled, radio: radioChannelEnabled }));
+  } catch {}
+}
 
 const mcp = new Server(
   { name: "uitocc", version: "0.6.0" },
@@ -76,7 +85,8 @@ const mcp = new Server(
     instructions: [
       "uitocc events arrive as <channel source=\"uitocc\" ...>.",
       "event=user_send: User pressed shortcut to share current screen.",
-      "event=audio_transcript: Real-time audio transcription from system audio.",
+      "event=tv: Real-time screen content changes (enable with toggle_tv).",
+      "event=radio: Real-time audio transcription (enable with toggle_radio).",
       "Use the search_screen_history and recent_screens tools to look up what the user has been doing on screen.",
       "Proactively use these tools when the user references something they were looking at, or when screen context would help.",
     ].join(" "),
@@ -176,15 +186,30 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: "toggle_audio_channel",
+      name: "toggle_tv",
       description:
-        "Enable or disable real-time audio transcript channel notifications. When enabled, transcriptions are pushed every ~10 seconds via channel events.",
+        "Enable or disable real-time screen change channel notifications (TV). When enabled, screen content changes are pushed via channel events as they happen.",
       inputSchema: {
         type: "object" as const,
         properties: {
           enabled: {
             type: "boolean",
-            description: "true to enable, false to disable audio channel notifications",
+            description: "true to enable, false to disable TV channel",
+          },
+        },
+        required: ["enabled"],
+      },
+    },
+    {
+      name: "toggle_radio",
+      description:
+        "Enable or disable real-time audio transcript channel notifications (RADIO). When enabled, transcriptions are pushed every ~10 seconds via channel events.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          enabled: {
+            type: "boolean",
+            description: "true to enable, false to disable RADIO channel",
           },
         },
         required: ["enabled"],
@@ -354,15 +379,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
   }
 
-  if (name === "toggle_audio_channel") {
+  if (name === "toggle_tv") {
     const enabled = (args as any).enabled as boolean;
-    audioChannelEnabled = enabled;
-    // Write status file for TUI daemon
-    const statusPath = join(DATA_DIR, "audio_channel_status.json");
-    try {
-      await Bun.write(statusPath, JSON.stringify({ enabled }));
-    } catch {}
-    return { content: [{ type: "text" as const, text: `Audio channel notifications ${enabled ? "enabled" : "disabled"}.` }] };
+    tvChannelEnabled = enabled;
+    await syncChannelStatus();
+    return { content: [{ type: "text" as const, text: `TV channel ${enabled ? "ON" : "OFF"}.` }] };
+  }
+
+  if (name === "toggle_radio") {
+    const enabled = (args as any).enabled as boolean;
+    radioChannelEnabled = enabled;
+    await syncChannelStatus();
+    return { content: [{ type: "text" as const, text: `RADIO channel ${enabled ? "ON" : "OFF"}.` }] };
   }
 
   return { content: [{ type: "text" as const, text: "Unknown tool" }] };
@@ -400,11 +428,38 @@ async function pollChannelEvents() {
       } catch {}
     }
 
-    // Check for audio transcript events
-    if (audioChannelEnabled && existsSync(CHANNEL_AUDIO_EVENT_PATH)) {
+    // Check for TV events
+    if (tvChannelEnabled && existsSync(CHANNEL_TV_EVENT_PATH)) {
       try {
-        const raw = await Bun.file(CHANNEL_AUDIO_EVENT_PATH).text();
-        unlinkSync(CHANNEL_AUDIO_EVENT_PATH);
+        const raw = await Bun.file(CHANNEL_TV_EVENT_PATH).text();
+        unlinkSync(CHANNEL_TV_EVENT_PATH);
+        const event = JSON.parse(raw);
+
+        let content = `Screen: **${event.app}** — "${event.windowTitle}"`;
+        if (event.texts?.length > 0) {
+          content += `\n\n${event.texts.join("\n")}`;
+        }
+
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content,
+            meta: {
+              source: "uitocc",
+              event: "tv",
+              app: event.app,
+              windowTitle: event.windowTitle,
+            },
+          },
+        });
+      } catch {}
+    }
+
+    // Check for RADIO events
+    if (radioChannelEnabled && existsSync(CHANNEL_RADIO_EVENT_PATH)) {
+      try {
+        const raw = await Bun.file(CHANNEL_RADIO_EVENT_PATH).text();
+        unlinkSync(CHANNEL_RADIO_EVENT_PATH);
         const event = JSON.parse(raw);
 
         await mcp.notification({
@@ -413,7 +468,7 @@ async function pollChannelEvents() {
             content: `Audio transcript:\n${event.transcript}`,
             meta: {
               source: "uitocc",
-              event: "audio_transcript",
+              event: "radio",
               timestamp: event.timestamp,
             },
           },
