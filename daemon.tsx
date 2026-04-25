@@ -13,7 +13,7 @@ import { unlinkSync } from "fs";
 
 import type { TrackedSource, Capture, DayCount } from "./lib/types";
 import type { View, SettingsTab, FocusArea } from "./lib/types";
-import { DATA_DIR, SETTINGS_PATH, AUDIO_DIR, AUDIO_SOURCE_KEY, POLL_MS, savedAudioChunkSec, savedSettings } from "./lib/constants";
+import { DATA_DIR, DB_PATH, SETTINGS_PATH, AUDIO_DIR, AUDIO_SOURCE_KEY, POLL_MS, savedAudioChunkSec, savedSettings } from "./lib/constants";
 import { db, insertStmt, insertAudioStmt, localDateStr, getRecentCaptures, getDailyCounts, getHourlyCountsForDate, getCapturesForDate } from "./lib/db";
 import { getChannels, getActiveSubscriptions } from "./lib/rules";
 import { generateEmbedding, getAllWindows, windowKey } from "./lib/capture";
@@ -30,7 +30,9 @@ function App() {
   const [view, setView] = useState<View>("feed");
   const [windows, setWindows] = useState<Map<string, TrackedSource>>(new Map());
   const windowsRef = useRef<Map<string, TrackedSource>>(new Map());
-  const [recordCount, setRecordCount] = useState(0);
+  const [recordCount, setRecordCount] = useState(
+    () => (db.prepare("SELECT count(*) as c FROM screen_states").get() as any).c
+  );
   const [broadcastCount, setBroadcastCount] = useState(0);
   const [screenIntervalSec, setScreenIntervalSec] = useState(
     typeof savedSettings.screenIntervalSec === "number" ? savedSettings.screenIntervalSec : 5
@@ -43,7 +45,9 @@ function App() {
   const [audioChunkSec, setAudioChunkSec] = useState(savedAudioChunkSec);
   const audioChunkRef = useRef(savedAudioChunkSec);
   const audioProcRef = useRef<any>(null);
-  const [audioBroadcastCount, setAudioBroadcastCount] = useState(0);
+  const [audioBroadcastCount, setAudioBroadcastCount] = useState(
+    () => (db.prepare("SELECT count(*) as c FROM audio_transcripts").get() as any).c
+  );
 
   // Audio enabled is derived from the audio source having channels assigned
   const audioSource = windows.get(AUDIO_SOURCE_KEY);
@@ -109,6 +113,9 @@ function App() {
   // Delete confirm
   const [deleteConfirm, setDeleteConfirm] = useState(false);
 
+  // Storage size
+  const [dbSizeMB, setDbSizeMB] = useState(0);
+
   // Clock
   const [now, setNow] = useState(new Date());
   useEffect(() => {
@@ -143,7 +150,7 @@ function App() {
     Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec }, null, 2));
   }, [screenIntervalSec]);
 
-  // Refresh channels + subscriptions + captures periodically
+  // Refresh channels + subscriptions + captures + storage size periodically
   useEffect(() => {
     const iv = setInterval(() => {
       setChannels(getChannels());
@@ -151,6 +158,7 @@ function App() {
       const audioSrc = windowsRef.current.get(AUDIO_SOURCE_KEY);
       const audioChans = audioSrc?.channels ?? [];
       setCaptures(getRecentCaptures(500, typeFilter, channelFilter, searchQuery, 0, audioChans));
+      try { setDbSizeMB(Math.round(Bun.file(DB_PATH).size / 1024 / 1024 * 10) / 10); } catch {}
     }, 2000);
     return () => clearInterval(iv);
   }, [typeFilter, channelFilter, searchQuery]);
@@ -846,7 +854,7 @@ function App() {
                 </Text>
               </Box>
               <Box paddingLeft={1} marginTop={1}>
-                <Text color="gray">{recordCount} screen · {audioBroadcastCount} audio</Text>
+                <Text color="gray">{recordCount} screen · {audioBroadcastCount} transcription · {dbSizeMB} MB</Text>
               </Box>
             </>
           )}
