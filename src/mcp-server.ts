@@ -469,7 +469,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   return { content: [{ type: "text" as const, text: "Unknown tool" }] };
 });
 
-// Unified diff format
+// Compact diff — only changed lines with position info
 function makeDiff(oldLines: string[], newLines: string[]): string {
   const m = oldLines.length, n = newLines.length;
   const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
@@ -478,7 +478,6 @@ function makeDiff(oldLines: string[], newLines: string[]): string {
       dp[i][j] = oldLines[i - 1] === newLines[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
     }
   }
-  // Backtrack to get edit script
   const ops: { type: " " | "-" | "+"; text: string }[] = [];
   let i = m, j = n;
   while (i > 0 || j > 0) {
@@ -492,37 +491,24 @@ function makeDiff(oldLines: string[], newLines: string[]): string {
   }
   ops.reverse();
 
-  // Group into hunks (with 3 lines of context)
-  const CTX = 3;
+  // Output only - and + lines with @@ position headers
   const changes = ops.map((o, idx) => ({ ...o, idx })).filter(o => o.type !== " ");
   if (changes.length === 0) return "";
 
-  const hunks: string[] = [];
-  let hunkStart = 0;
-  while (hunkStart < changes.length) {
-    let hunkEnd = hunkStart;
-    while (hunkEnd + 1 < changes.length && changes[hunkEnd + 1].idx - changes[hunkEnd].idx <= CTX * 2 + 1) {
-      hunkEnd++;
+  const result: string[] = [];
+  let lastHunkOldLine = -1;
+  let oldLine = 1, newLine = 1;
+  for (let k = 0; k < ops.length; k++) {
+    if (ops[k].type === " ") { oldLine++; newLine++; continue; }
+    // Emit position header when there's a gap
+    if (oldLine !== lastHunkOldLine + 1 || result.length === 0) {
+      result.push(`@@ -${oldLine} +${newLine} @@`);
     }
-    const from = Math.max(0, changes[hunkStart].idx - CTX);
-    const to = Math.min(ops.length, changes[hunkEnd].idx + CTX + 1);
-
-    let oldStart = 1, newStart = 1;
-    for (let k = 0; k < from; k++) {
-      if (ops[k].type !== "+") oldStart++;
-      if (ops[k].type !== "-") newStart++;
-    }
-    let oldCount = 0, newCount = 0;
-    const lines: string[] = [];
-    for (let k = from; k < to; k++) {
-      lines.push(`${ops[k].type}${ops[k].text}`);
-      if (ops[k].type !== "+") oldCount++;
-      if (ops[k].type !== "-") newCount++;
-    }
-    hunks.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@\n${lines.join("\n")}`);
-    hunkStart = hunkEnd + 1;
+    result.push(`${ops[k].type}${ops[k].text}`);
+    if (ops[k].type === "-") { lastHunkOldLine = oldLine; oldLine++; }
+    else { lastHunkOldLine = oldLine; newLine++; }
   }
-  return hunks.join("\n");
+  return result.join("\n");
 }
 
 // Poll DB for new screen/audio records and notify subscribed channels
