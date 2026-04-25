@@ -613,23 +613,6 @@ function App() {
 
   // ===== Render =====
 
-  // --- Header ---
-  const Header = () => (
-    <Box paddingX={1} justifyContent="space-between">
-      <Box gap={2}>
-        <Text bold color="magenta">tunr</Text>
-        <Text color={recBlink ? "red" : "gray"}>
-          {recBlink ? "●" : "○"} REC {recordCount}
-        </Text>
-        <Text color="gray">[{screenIntervalSec}s]</Text>
-      </Box>
-      <Box gap={2}>
-        {updateAvailable && <Text color="yellow">v{updateAvailable} available · brew upgrade tunr</Text>}
-        <Text color="gray">[C]alendar [S]ettings [Q]uit</Text>
-      </Box>
-    </Box>
-  );
-
   // --- Sources Panel ---
   const SourcesBar = () => {
     return (
@@ -1022,17 +1005,22 @@ function App() {
   // --- Feed View (default) ---
   return (
     <Box flexDirection="column" height={rows}>
-      <Header />
       <Box borderStyle="round" borderColor="gray" marginX={1} marginBottom={0} flexDirection="column">
         <SourcesBar />
       </Box>
       <FilterBar />
       <Feed />
       <Box paddingX={1} justifyContent="space-between">
-        <Text color="gray">
-          {focusArea === "sources" ? "[Enter] assign channel [↑↓] nav [Tab] feed" : "[↑↓] scroll [Enter] detail [/] search"}
-        </Text>
-        {captures.length > 0 && <Text color="gray">{feedIndex + 1}/{captures.length}</Text>}
+        <Box gap={1}>
+          <Text color="gray">
+            {focusArea === "sources" ? "[Enter] assign [↑↓] nav [Tab] feed" : "[↑↓] scroll [Enter] detail [/] search"}
+          </Text>
+          <Text color="gray">[C]al [S]et [Q]uit</Text>
+        </Box>
+        <Box gap={1}>
+          {updateAvailable && <Text color="yellow">v{updateAvailable} available</Text>}
+          {captures.length > 0 && <Text color="gray">{feedIndex + 1}/{captures.length}</Text>}
+        </Box>
       </Box>
     </Box>
   );
