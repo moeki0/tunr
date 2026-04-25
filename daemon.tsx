@@ -9,6 +9,7 @@ import { Database } from "bun:sqlite";
 import { join } from "path";
 import { homedir } from "os";
 import { dirname } from "path";
+import { unlinkSync } from "fs";
 
 // --- DB setup ---
 const DATA_DIR = join(homedir(), "Library", "Application Support", "uitocc");
@@ -31,11 +32,15 @@ db.run(`CREATE TABLE IF NOT EXISTS screen_states (
 db.run(`CREATE INDEX IF NOT EXISTS idx_screen_states_timestamp ON screen_states(timestamp)`);
 db.run(`CREATE INDEX IF NOT EXISTS idx_screen_states_app ON screen_states(app)`);
 
-// Add embedding column if missing
+// Add columns if missing
 try { db.run(`ALTER TABLE screen_states ADD COLUMN embedding BLOB`); } catch {}
+try { db.run(`ALTER TABLE screen_states ADD COLUMN screenshot_path TEXT`); } catch {}
+
+const SCREENSHOTS_DIR = join(DATA_DIR, "screenshots");
+await Bun.write(join(SCREENSHOTS_DIR, ".keep"), "");
 
 const insertStmt = db.prepare(
-  `INSERT INTO screen_states (timestamp, pid, window_index, app, window_title, texts, embedding) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  `INSERT INTO screen_states (timestamp, pid, window_index, app, window_title, texts, embedding, screenshot_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 );
 
 // --- AX text helper ---
@@ -69,6 +74,7 @@ interface WindowInfo {
   app: string;
   title: string;
   texts: string[];
+  window_id: number;
 }
 
 async function getAllWindows(): Promise<WindowInfo[]> {
@@ -204,14 +210,37 @@ function App() {
           const fingerprint = `${w.title}\0${textsJson}`;
           if (lastRecorded.get(key) === fingerprint) continue;
           lastRecorded.set(key, fingerprint);
+          // Capture screenshot
+          let screenshotPath: string | null = null;
+          if (w.window_id) {
+            const filename = `${ts.replace(/[:.]/g, "-")}_${w.pid}_${w.window_index}.png`;
+            const filepath = join(SCREENSHOTS_DIR, filename);
+            const sc = Bun.spawnSync(["/usr/sbin/screencapture", `-l${w.window_id}`, "-x", filepath]);
+            if (sc.exitCode === 0) screenshotPath = filepath;
+          }
           const textForEmbed = `${w.app} ${w.title} ${w.texts.slice(0, 10).join(" ")}`.slice(0, 1000);
           const emb = generateEmbedding(textForEmbed);
-          insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, textsJson, emb);
+          insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, textsJson, emb, screenshotPath);
           setRecordCount((c) => c + 1);
         }
       }
     }
+    // Cleanup old screenshots (>24h) every 10 minutes
+    async function cleanup() {
+      while (active) {
+        await Bun.sleep(600_000);
+        const cutoff = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+        const old = db.prepare(
+          `SELECT id, screenshot_path FROM screen_states WHERE timestamp < ? AND screenshot_path IS NOT NULL`
+        ).all(cutoff) as any[];
+        for (const row of old) {
+          try { unlinkSync(row.screenshot_path); } catch {}
+        }
+        db.run(`UPDATE screen_states SET screenshot_path = NULL WHERE timestamp < ? AND screenshot_path IS NOT NULL`, cutoff);
+      }
+    }
     record();
+    cleanup();
     return () => { active = false; };
   }, []);
 

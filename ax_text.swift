@@ -84,16 +84,28 @@ if CommandLine.arguments.contains("--all") {
         let appEl = AXUIElementCreateApplication(pid)
         let windows = getWindows(appEl)
 
+        // Get CGWindowIDs for this app
+        let cgWindows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let appCGWindows = cgWindows.filter { ($0[kCGWindowOwnerPID as String] as? Int32) == pid }
+
         for (idx, win) in windows.enumerated() {
             let title = axValue(win, kAXTitleAttribute) as? String ?? ""
             var texts: [String] = []
             collectTexts(win, depth: 0, maxDepth: 30, results: &texts, limit: 500)
+            // Match CGWindowID by title or index
+            var windowID: Int = 0
+            if let matched = appCGWindows.first(where: { ($0[kCGWindowName as String] as? String) == title && !title.isEmpty }) {
+                windowID = matched[kCGWindowNumber as String] as? Int ?? 0
+            } else if idx < appCGWindows.count {
+                windowID = appCGWindows[idx][kCGWindowNumber as String] as? Int ?? 0
+            }
             entries.append([
                 "pid": Int(pid),
                 "window_index": idx,
                 "app": appName,
                 "title": title,
                 "texts": texts,
+                "window_id": windowID,
             ])
         }
     }

@@ -9,7 +9,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { Database } from "bun:sqlite";
 import { homedir } from "os";
 import { join, dirname } from "path";
-import { existsSync, unlinkSync } from "fs";
+import { existsSync, unlinkSync, readFileSync } from "fs";
 
 const DATA_DIR = join(homedir(), "Library", "Application Support", "uitocc");
 const CHANNEL_EVENT_PATH = join(DATA_DIR, "channel_event.json");
@@ -197,7 +197,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const since = new Date(Date.now() - minutes * 60_000).toISOString();
 
       const rows = db.prepare(
-        `SELECT timestamp, app, window_title, texts FROM screen_states
+        `SELECT timestamp, app, window_title, texts, screenshot_path FROM screen_states
          WHERE timestamp > ?
          ORDER BY timestamp DESC LIMIT ?`
       ).all(since, limit) as any[];
@@ -206,12 +206,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: "text" as const, text: `No screen history in the last ${minutes} minutes.` }] };
       }
 
-      const result = rows.map((r) => {
+      const content: any[] = [];
+      for (const r of rows) {
         const texts = JSON.parse(r.texts) as string[];
-        return `[${r.timestamp}] ${r.app} — ${r.window_title}\n${texts.join("\n")}`;
-      }).join("\n\n---\n\n");
+        content.push({ type: "text" as const, text: `[${r.timestamp}] ${r.app} — ${r.window_title}\n${texts.join("\n")}` });
+        if (r.screenshot_path && existsSync(r.screenshot_path)) {
+          content.push({ type: "image" as const, data: readFileSync(r.screenshot_path).toString("base64"), mimeType: "image/png" });
+        }
+      }
 
-      return { content: [{ type: "text" as const, text: result }] };
+      return { content };
     } finally {
       db.close();
     }
