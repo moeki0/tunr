@@ -23,8 +23,15 @@ bun daemon.tsx    # start watch daemon with TUI
 
 - `search_screen_history(query, minutes?, limit?)` — search observed screen text (vector similarity via NLEmbedding, LIKE fallback)
 - `recent_screens(minutes?, limit?)` — recent screen states
+- `recent_audio(minutes?, limit?)` — recent audio transcripts
+- `search_audio(query, minutes?, limit?)` — search audio transcripts
 
-When the user references something they were looking at, or screen context would help understand their request, proactively use these tools.
+## MCP Channels
+
+- `user_send` — user pressed shortcut to share current screen
+- `audio_transcript` — real-time audio transcription (every 10s)
+
+When the user references something they were looking at or listening to, or screen/audio context would help understand their request, proactively use these tools.
 
 ## Dedup rules
 

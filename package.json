@@ -1,6 +1,6 @@
 {
   "name": "uitocc",
-  "version": "0.9.6",
+  "version": "0.9.13",
   "private": true,
   "scripts": {
     "daemon": "bun daemon.ts",

@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from "react";
-import { render, Box, Text, useInput, useApp } from "ink";
+import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import { Database } from "bun:sqlite";
 import { join } from "path";
 import { homedir } from "os";
@@ -260,6 +260,26 @@ function App() {
     return () => { active = false; };
   }, []);
 
+  // Audio channel status (from MCP server)
+  const [audioChannelActive, setAudioChannelActive] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const statusPath = join(DATA_DIR, "audio_channel_status.json");
+    async function pollStatus() {
+      while (active) {
+        try {
+          if (existsSync(statusPath)) {
+            const data = JSON.parse(readFileSync(statusPath, "utf-8"));
+            setAudioChannelActive(!!data.enabled);
+          }
+        } catch {}
+        await Bun.sleep(2000);
+      }
+    }
+    pollStatus();
+    return () => { active = false; };
+  }, []);
+
   // Audio capture & transcription
   const [audioEnabled, setAudioEnabled] = useState(true);
   const audioEnabledRef = useRef(true);
@@ -291,7 +311,7 @@ function App() {
         }
 
         setAudioStatus("recording");
-        const proc = Bun.spawn([audioBin, AUDIO_DIR, "30"], {
+        const proc = Bun.spawn([audioBin, AUDIO_DIR, "10"], {
           stdout: "pipe",
           stderr: "pipe",
         });
@@ -325,6 +345,12 @@ function App() {
               if (transcript) {
                 insertAudioStmt.run(chunk.timestamp, chunk.file, transcript);
                 setLastTranscript(transcript.slice(0, 80));
+                // Write channel event for MCP server
+                const audioEventPath = join(DATA_DIR, "channel_audio_event.json");
+                await Bun.write(audioEventPath, JSON.stringify({
+                  timestamp: chunk.timestamp,
+                  transcript,
+                }));
               }
             } catch {}
           }
@@ -364,8 +390,7 @@ function App() {
     if (input === "q" || (key.ctrl && input === "c")) {
       if (audioProcRef.current) audioProcRef.current.kill();
       db.close();
-      exit();
-      return;
+      process.exit(0);
     }
 
     // Toggle audio
@@ -418,6 +443,10 @@ function App() {
     }
   });
 
+  // Terminal size
+  const { stdout } = useStdout();
+  const rows = stdout?.rows ?? 24;
+
   // Clock
   const [now, setNow] = useState(new Date());
   useEffect(() => {
@@ -434,7 +463,7 @@ function App() {
   const recBlink = now.getSeconds() % 2 === 0;
 
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <Box flexDirection="column" paddingX={1} height={rows}>
       {/* Header */}
       <Box borderStyle="single" borderColor="green" paddingX={1} justifyContent="space-between">
         <Text color="green" bold> UITOCC CONTROL ROOM </Text>
@@ -453,6 +482,9 @@ function App() {
         </Text>
         <Text color={audioEnabled ? (audioStatus === "recording" ? "green" : "yellow") : "red"}>
           {audioEnabled && audioStatus === "recording" ? (recBlink ? "●" : "○") : "○"} MIC {audioEnabled ? audioStatus.toUpperCase() : "OFF"}
+        </Text>
+        <Text color={audioChannelActive ? "cyan" : "gray"}>
+          CH {audioChannelActive ? "LIVE" : "OFF"}
         </Text>
         <Text color="green">SYS ONLINE</Text>
       </Box>

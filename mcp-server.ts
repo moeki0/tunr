@@ -13,6 +13,7 @@ import { existsSync, unlinkSync, readFileSync } from "fs";
 
 const DATA_DIR = join(homedir(), "Library", "Application Support", "uitocc");
 const CHANNEL_EVENT_PATH = join(DATA_DIR, "channel_event.json");
+const CHANNEL_AUDIO_EVENT_PATH = join(DATA_DIR, "channel_audio_event.json");
 const DB_PATH = join(DATA_DIR, "uitocc.db");
 
 function openDb(): Database | null {
@@ -63,6 +64,8 @@ function blobToFloat64Array(blob: Buffer): Float64Array {
   return arr;
 }
 
+let audioChannelEnabled = false;
+
 const mcp = new Server(
   { name: "uitocc", version: "0.6.0" },
   {
@@ -73,6 +76,7 @@ const mcp = new Server(
     instructions: [
       "uitocc events arrive as <channel source=\"uitocc\" ...>.",
       "event=user_send: User pressed shortcut to share current screen.",
+      "event=audio_transcript: Real-time audio transcription from system audio.",
       "Use the search_screen_history and recent_screens tools to look up what the user has been doing on screen.",
       "Proactively use these tools when the user references something they were looking at, or when screen context would help.",
     ].join(" "),
@@ -161,6 +165,21 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ["query"],
+      },
+    },
+    {
+      name: "toggle_audio_channel",
+      description:
+        "Enable or disable real-time audio transcript channel notifications. When enabled, transcriptions are pushed every ~10 seconds via channel events.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          enabled: {
+            type: "boolean",
+            description: "true to enable, false to disable audio channel notifications",
+          },
+        },
+        required: ["enabled"],
       },
     },
   ],
@@ -323,6 +342,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
   }
 
+  if (name === "toggle_audio_channel") {
+    const enabled = (args as any).enabled as boolean;
+    audioChannelEnabled = enabled;
+    // Write status file for TUI daemon
+    const statusPath = join(DATA_DIR, "audio_channel_status.json");
+    try {
+      await Bun.write(statusPath, JSON.stringify({ enabled }));
+    } catch {}
+    return { content: [{ type: "text" as const, text: `Audio channel notifications ${enabled ? "enabled" : "disabled"}.` }] };
+  }
+
   return { content: [{ type: "text" as const, text: "Unknown tool" }] };
 });
 
@@ -355,6 +385,27 @@ async function pollChannelEvents() {
         },
       });
     } catch {}
+
+    // Check for audio transcript events
+    if (audioChannelEnabled && existsSync(CHANNEL_AUDIO_EVENT_PATH)) {
+      try {
+        const raw = await Bun.file(CHANNEL_AUDIO_EVENT_PATH).text();
+        unlinkSync(CHANNEL_AUDIO_EVENT_PATH);
+        const event = JSON.parse(raw);
+
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content: `Audio transcript:\n${event.transcript}`,
+            meta: {
+              source: "uitocc",
+              event: "audio_transcript",
+              timestamp: event.timestamp,
+            },
+          },
+        });
+      } catch {}
+    }
   }
 }
 
