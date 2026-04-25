@@ -9,7 +9,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { Database } from "bun:sqlite";
 import { homedir } from "os";
 import { join, dirname } from "path";
-import { existsSync, unlinkSync, readFileSync } from "fs";
+import { existsSync, unlinkSync } from "fs";
 
 const DATA_DIR = join(homedir(), "Library", "Application Support", "uitocc");
 const CHANNEL_EVENT_PATH = join(DATA_DIR, "channel_event.json");
@@ -308,10 +308,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       for (const r of rows) {
         const texts = JSON.parse(r.texts) as string[];
         content.push({ type: "text" as const, text: `[${r.timestamp}] ${r.app} — ${r.window_title}\n${texts.join("\n")}` });
-        if (r.screenshot_path && existsSync(r.screenshot_path)) {
-          const mime = r.screenshot_path.endsWith(".jpg") ? "image/jpeg" : "image/png";
-          content.push({ type: "image" as const, data: readFileSync(r.screenshot_path).toString("base64"), mimeType: mime });
-        }
       }
 
       return { content };
@@ -446,11 +442,12 @@ async function pollChannelEvents() {
         unlinkSync(CHANNEL_TV_EVENT_PATH);
         const event = JSON.parse(raw);
 
-        // New format: multiple screenshots
-        if (event.screenshots) {
-          const lines = event.screenshots.map((s: any) =>
-            `**${s.app}** — "${s.windowTitle}"\nScreenshot: ${s.screenshotPath}`
-          );
+        if (event.entries) {
+          const lines = event.entries.map((s: any) => {
+            let line = `**${s.app}** — "${s.windowTitle}"`;
+            if (s.texts?.length) line += `\n${s.texts.join("\n")}`;
+            return line;
+          });
           await mcp.notification({
             method: "notifications/claude/channel",
             params: {

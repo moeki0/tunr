@@ -71,11 +71,33 @@ func getWindows(_ appEl: AXUIElement) -> [AXUIElement] {
     axValue(appEl, kAXWindowsAttribute) as? [AXUIElement] ?? []
 }
 
+// Chromium-based browsers don't expose web content in the AX tree by default.
+// Setting AXManualAccessibility on the AXApplication element enables it
+// without the window-manager side effects of AXEnhancedUserInterface.
+let chromiumBundleIDs: Set<String> = [
+    "com.google.Chrome", "com.google.Chrome.canary",
+    "com.microsoft.edgemac", "com.brave.Browser",
+    "com.vivaldi.Vivaldi", "com.operasoftware.Opera",
+    "com.arc.Arc",
+]
+
+func enableAXForChromium(_ app: NSRunningApplication) {
+    let axApp = AXUIElementCreateApplication(app.processIdentifier)
+    AXUIElementSetAttributeValue(axApp, "AXManualAccessibility" as CFString, true as CFTypeRef)
+}
+
 // --all mode: enumerate all windows from all apps as JSON
 if CommandLine.arguments.contains("--all") {
     var entries: [[String: Any]] = []
     let apps = NSWorkspace.shared.runningApplications.filter {
         $0.activationPolicy == .regular
+    }
+
+    // Enable AX tree for Chromium browsers before querying
+    for app in apps {
+        if let bid = app.bundleIdentifier, chromiumBundleIDs.contains(bid) {
+            enableAXForChromium(app)
+        }
     }
 
     for app in apps {

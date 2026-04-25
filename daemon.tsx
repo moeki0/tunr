@@ -9,7 +9,7 @@ import { Database } from "bun:sqlite";
 import { join } from "path";
 import { homedir } from "os";
 import { dirname } from "path";
-import { unlinkSync } from "fs";
+
 
 // --- DB setup ---
 const DATA_DIR = join(homedir(), "Library", "Application Support", "uitocc");
@@ -47,7 +47,6 @@ try { db.run(`ALTER TABLE screen_states ADD COLUMN embedding BLOB`); } catch {}
 try { db.run(`ALTER TABLE screen_states ADD COLUMN screenshot_path TEXT`); } catch {}
 
 const SCREENSHOTS_DIR = join(DATA_DIR, "screenshots");
-await Bun.write(join(SCREENSHOTS_DIR, ".keep"), "");
 
 const AUDIO_DIR = join(DATA_DIR, "audio");
 await Bun.write(join(AUDIO_DIR, ".keep"), "");
@@ -241,12 +240,9 @@ function App() {
   // Record allowed windows periodically (with dedup) + event-driven capture
   useEffect(() => {
     let active = true;
-    const lastScreenshot = new Map<string, string>(); // windowKey -> last screenshot path
-    const IMAGE_DIFF_PATH = join(dirname(process.execPath), "uitocc-image-diff");
-    const IMAGE_DIFF_FALLBACK = join(import.meta.dir, "uitocc-image-diff");
+    const lastTexts = new Map<string, string>(); // windowKey -> last texts JSON for dedup
     const EVENT_MONITOR_PATH = join(dirname(process.execPath), "uitocc-event-monitor");
     const EVENT_MONITOR_FALLBACK = join(import.meta.dir, "uitocc-event-monitor");
-    const DIFF_THRESHOLD = 0.05; // 5% pixel change threshold
     let pendingEventCapture = false;
 
     // Start event monitor (scroll + key detection)
@@ -271,8 +267,6 @@ function App() {
     startEventMonitor();
 
     async function record() {
-      const imageDiffBin = await Bun.file(IMAGE_DIFF_PATH).exists() ? IMAGE_DIFF_PATH : IMAGE_DIFF_FALLBACK;
-      const hasImageDiff = await Bun.file(imageDiffBin).exists();
       while (active) {
         // Wait for timer or event trigger
         if (!pendingEventCapture) {
@@ -293,69 +287,40 @@ function App() {
         const time = ts.slice(11, 19);
         const changedScreenshots: { app: string; title: string; path: string }[] = [];
 
+        const changedEntries: { app: string; title: string; texts: string[] }[] = [];
+
         for (const tw of allowedWindows) {
           const key = windowKey(tw);
           const w = foundMap.get(key);
-          if (!w || !w.window_id) continue;
+          if (!w) continue;
+          if (!w.texts || w.texts.length === 0) continue;
 
-          const filename = `${ts.replace(/[:.]/g, "-")}_${w.pid}_${w.window_index}.jpg`;
-          const filepath = join(SCREENSHOTS_DIR, filename);
-          const sc = Bun.spawnSync(["/usr/sbin/screencapture", `-l${w.window_id}`, "-x", "-t", "jpg", filepath]);
-          if (sc.exitCode !== 0) continue;
-          Bun.spawnSync(["sips", "--resampleWidth", "800", "-s", "formatOptions", "60", filepath], { stdout: "pipe", stderr: "pipe" });
+          const textsJson = JSON.stringify(w.texts);
+          if (lastTexts.get(key) === textsJson) continue;
+          lastTexts.set(key, textsJson);
 
-          const prevPath = lastScreenshot.get(key);
-          let changed = false;
-          if (!prevPath || !hasImageDiff) {
-            changed = true;
-          } else {
-            const diff = Bun.spawnSync([imageDiffBin, prevPath, filepath], { stdout: "pipe" });
-            const ratio = parseFloat(diff.stdout.toString().trim());
-            changed = isNaN(ratio) || ratio > DIFF_THRESHOLD;
-          }
-
-          if (changed) {
-            lastScreenshot.set(key, filepath);
-            changedScreenshots.push({ app: w.app, title: w.title, path: filepath });
-            insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, "[]", null, filepath);
-            setRecordCount((c) => c + 1);
-          } else {
-            try { unlinkSync(filepath); } catch {}
-          }
+          const embedding = generateEmbedding(w.texts.join("\n"));
+          insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, textsJson, embedding, null);
+          setRecordCount((c) => c + 1);
+          changedEntries.push({ app: w.app, title: w.title, texts: w.texts });
         }
 
-        // Broadcast all changed screenshots as a single TV event
-        if (tvChannelRef.current && changedScreenshots.length > 0) {
+        // Broadcast changes via TV channel
+        if (tvChannelRef.current && changedEntries.length > 0) {
           const tvEventPath = join(DATA_DIR, "channel_tv_event.json");
           await Bun.write(tvEventPath, JSON.stringify({
             timestamp: ts,
-            screenshots: changedScreenshots.map((s) => ({
+            entries: changedEntries.map((s) => ({
               app: s.app,
               windowTitle: s.title,
-              screenshotPath: s.path,
+              texts: s.texts,
             })),
           }));
-          const names = changedScreenshots.map((s) => s.app).join(", ");
           setTvBroadcastCount((c) => c + 1);
         }
       }
     }
-    // Cleanup old screenshots (>24h) every 10 minutes
-    async function cleanup() {
-      while (active) {
-        await Bun.sleep(600_000);
-        const cutoff = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
-        const old = db.prepare(
-          `SELECT id, screenshot_path FROM screen_states WHERE timestamp < ? AND screenshot_path IS NOT NULL`
-        ).all(cutoff) as any[];
-        for (const row of old) {
-          try { unlinkSync(row.screenshot_path); } catch {}
-        }
-        db.run(`UPDATE screen_states SET screenshot_path = NULL WHERE timestamp < ? AND screenshot_path IS NOT NULL`, cutoff);
-      }
-    }
     record();
-    cleanup();
     return () => { active = false; };
   }, []);
 
