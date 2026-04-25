@@ -16,7 +16,7 @@ import type { View, SettingsTab, FocusArea } from "./lib/types";
 import { VERSION, DB_PATH, SETTINGS_PATH, AUDIO_DIR, AUDIO_SOURCE_KEY, POLL_MS, savedAudioChunkSec, savedSettings } from "./lib/constants";
 import { db, insertStmt, insertAudioStmt, localDateStr, getRecentCaptures, getDailyCounts, getHourlyCountsForDate, getCapturesForDate } from "./lib/db";
 import { getChannels, getActiveSubscriptions } from "./lib/rules";
-import { generateEmbedding, getAllWindows, windowKey, cosineSimilarity } from "./lib/capture";
+import { generateEmbedding, getAllWindows, windowKey } from "./lib/capture";
 import { checkForUpdate } from "./lib/update-check";
 
 // ===== TUI =====
@@ -38,10 +38,10 @@ function App() {
     typeof savedSettings.screenIntervalSec === "number" ? savedSettings.screenIntervalSec : 5
   );
   const screenIntervalRef = useRef(screenIntervalSec);
-  const [changeThreshold, setChangeThreshold] = useState(
-    typeof savedSettings.changeThreshold === "number" ? savedSettings.changeThreshold : 0.5
+  const [settleSec, setSettleSec] = useState(
+    typeof savedSettings.settleSec === "number" ? savedSettings.settleSec : 10
   );
-  const changeThresholdRef = useRef(changeThreshold);
+  const settleSecRef = useRef(settleSec);
 
   // Audio
   const [audioStatus, setAudioStatus] = useState("starting");
@@ -153,16 +153,16 @@ function App() {
   }, []);
   useEffect(() => {
     audioChunkRef.current = audioChunkSec;
-    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, changeThreshold }, null, 2));
+    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, settleSec }, null, 2));
   }, [audioChunkSec]);
   useEffect(() => {
     screenIntervalRef.current = screenIntervalSec;
-    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, changeThreshold }, null, 2));
+    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, settleSec }, null, 2));
   }, [screenIntervalSec]);
   useEffect(() => {
-    changeThresholdRef.current = changeThreshold;
-    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, changeThreshold }, null, 2));
-  }, [changeThreshold]);
+    settleSecRef.current = settleSec;
+    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, settleSec }, null, 2));
+  }, [settleSec]);
 
   // Refresh channels + subscriptions + captures + storage size periodically
   useEffect(() => {
@@ -227,10 +227,11 @@ function App() {
     return () => { active = false; };
   }, []);
 
-  // --- Recording ---
+  // --- Recording (debounce: record when content settles) ---
   useEffect(() => {
     let active = true;
-    const lastEmbeddings = new Map<string, Buffer>();
+    // Per-window state: last seen text, when it last changed, whether we've recorded since last change
+    const windowState = new Map<string, { textsJson: string; lastChangeAt: number; recorded: boolean }>();
 
     async function record() {
       while (active) {
@@ -238,7 +239,7 @@ function App() {
 
         const found = await getAllWindows();
         const foundMap = new Map(found.map((w) => [windowKey(w), w]));
-        const ts = new Date().toISOString();
+        const now = Date.now();
         const currentWindows = windowsRef.current;
 
         for (const [, w] of foundMap) {
@@ -248,25 +249,35 @@ function App() {
           const tw = currentWindows.get(key);
           if (!tw || tw.channels.length === 0) continue;
 
-          const embedding = generateEmbedding(w.texts.join("\n"));
-
-          // Filter by embedding distance (normalized by text length)
-          const prev = lastEmbeddings.get(key);
-          if (embedding && prev) {
-            const sim = cosineSimilarity(prev, embedding);
-            const distance = 1 - sim;
-            const textLen = w.texts.join("\n").length;
-            const BASE_LEN = 500;
-            const scale = Math.log(Math.max(textLen, 10)) / Math.log(BASE_LEN);
-            const effectiveThreshold = changeThresholdRef.current * scale;
-            if (distance < effectiveThreshold) continue;
-          }
-          if (embedding) lastEmbeddings.set(key, embedding);
-
           const textsJson = JSON.stringify(w.texts);
-          const channelNamesJson = JSON.stringify(tw.channels);
-          insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, textsJson, embedding, null, channelNamesJson);
-          setRecordCount((c) => c + 1);
+          const state = windowState.get(key);
+
+          if (!state) {
+            // First time seeing this window — record immediately
+            const embedding = generateEmbedding(w.texts.join("\n"));
+            const channelNamesJson = JSON.stringify(tw.channels);
+            insertStmt.run(new Date().toISOString(), w.pid, w.window_index, w.app, w.title, textsJson, embedding, null, channelNamesJson);
+            setRecordCount((c) => c + 1);
+            windowState.set(key, { textsJson, lastChangeAt: now, recorded: true });
+            continue;
+          }
+
+          if (state.textsJson !== textsJson) {
+            // Content changed — update state, don't record yet
+            state.textsJson = textsJson;
+            state.lastChangeAt = now;
+            state.recorded = false;
+            continue;
+          }
+
+          // Content unchanged — check if settled long enough
+          if (!state.recorded && (now - state.lastChangeAt) >= settleSecRef.current * 1000) {
+            const embedding = generateEmbedding(w.texts.join("\n"));
+            const channelNamesJson = JSON.stringify(tw.channels);
+            insertStmt.run(new Date().toISOString(), w.pid, w.window_index, w.app, w.title, textsJson, embedding, null, channelNamesJson);
+            setRecordCount((c) => c + 1);
+            state.recorded = true;
+          }
         }
       }
     }
@@ -472,10 +483,7 @@ function App() {
           return;
         }
         if (settingsIndex === 1 && (input === "[" || input === "]")) {
-          setChangeThreshold(p => {
-            const v = input === "[" ? Math.max(0, Math.round((p - 0.05) * 100) / 100) : Math.min(1, Math.round((p + 0.05) * 100) / 100);
-            return v;
-          });
+          setSettleSec(p => input === "[" ? Math.max(3, p - 1) : Math.min(60, p + 1));
           return;
         }
         if (settingsIndex === 2 && (input === "[" || input === "]")) {
@@ -806,7 +814,7 @@ function App() {
               </Box>
               <Box paddingLeft={1}>
                 <Text color={settingsIndex === 1 ? "magenta" : "white"}>
-                  {settingsIndex === 1 ? "▸" : " "} Change threshold: {changeThreshold.toFixed(2)}  [[ ]] adjust
+                  {settingsIndex === 1 ? "▸" : " "} Settle delay: {settleSec}s  [[ ]] adjust
                 </Text>
               </Box>
               <Box paddingLeft={1}>
