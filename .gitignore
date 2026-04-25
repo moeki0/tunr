@@ -1,7 +1,7 @@
 node_modules/
-uitocc
-uitocc-ax-text
-uitocc-send
+/uitocc
+/uitocc-ax-text
+/uitocc-send
 *.db
 *.bun-build
 .claude/
