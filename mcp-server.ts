@@ -9,10 +9,9 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { Database } from "bun:sqlite";
 import { homedir } from "os";
 import { join, dirname } from "path";
-import { existsSync, unlinkSync, readdirSync } from "fs";
+import { existsSync } from "fs";
 
 const DATA_DIR = join(homedir(), "Library", "Application Support", "tunr");
-const CHANNEL_EVENT_PATH = join(DATA_DIR, "channel_event.json"); // user_send events
 const DB_PATH = join(DATA_DIR, "tunr.db");
 
 function openDb(): Database | null {
@@ -299,9 +298,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
     try {
       db.run(`DELETE FROM channel_subscriptions WHERE channel_name = ?`, channel);
-      // Clean up event files
-      try { unlinkSync(join(DATA_DIR, `channel_event_${channel}.json`)); } catch {}
-      try { unlinkSync(join(DATA_DIR, `channel_audio_${channel}.json`)); } catch {}
       return { content: [{ type: "text" as const, text: `Unsubscribed from channel "${channel}".` }] };
     } finally {
       db.close();
@@ -473,103 +469,88 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   return { content: [{ type: "text" as const, text: "Unknown tool" }] };
 });
 
-// Track which channel event files we're watching
-const watchedChannelEvents = new Set<string>();
+// Poll DB for new screen/audio records and notify subscribed channels
+let lastScreenId = 0;
+let lastAudioId = 0;
 
-async function pollChannelEvents() {
-  while (true) {
-    await Bun.sleep(1000);
-
-    // Check for user_send events (always active)
-    if (existsSync(CHANNEL_EVENT_PATH)) {
-      try {
-        const raw = await Bun.file(CHANNEL_EVENT_PATH).text();
-        unlinkSync(CHANNEL_EVENT_PATH);
-        const event = JSON.parse(raw);
-
-        let content = `User is looking at: **${event.app}** — "${event.windowTitle}"`;
-        if (event.cursorText) content += `\n\nText at cursor:\n${event.cursorText}`;
-        if (event.contextTexts?.length > 0) {
-          content += `\n\nVisible text:\n${event.contextTexts.map((t: string) => `- ${t}`).join("\n")}`;
-        }
-
-        await mcp.notification({
-          method: "notifications/claude/channel",
-          params: {
-            content,
-            meta: {
-              source: "tunr",
-              event: "user_send",
-              app: event.app,
-              windowTitle: event.windowTitle,
-            },
-          },
-        });
-      } catch {}
+async function pollDb() {
+  // Initialize cursors to latest IDs
+  const initDb = openDb();
+  if (initDb) {
+    try {
+      const s = initDb.prepare("SELECT MAX(id) as m FROM screen_states").get() as any;
+      const a = initDb.prepare("SELECT MAX(id) as m FROM audio_transcripts").get() as any;
+      lastScreenId = s?.m || 0;
+      lastAudioId = a?.m || 0;
+    } finally {
+      initDb.close();
     }
+  }
 
-    // Check for per-channel screen events
+  while (true) {
+    await Bun.sleep(2000);
+
+    const db = openDb();
+    if (!db) continue;
     try {
-      const files = readdirSync(DATA_DIR).filter(f => f.startsWith("channel_event_") && f.endsWith(".json"));
-      for (const file of files) {
-        const filePath = join(DATA_DIR, file);
-        try {
-          const raw = await Bun.file(filePath).text();
-          unlinkSync(filePath);
-          const event = JSON.parse(raw);
-          const channelName = file.replace("channel_event_", "").replace(".json", "");
+      // Get subscribed channels
+      const subs = db.prepare("SELECT channel_name FROM channel_subscriptions").all() as any[];
+      if (subs.length === 0) continue;
+      const subNames = subs.map((s: any) => s.channel_name);
 
-          if (event.entries) {
-            const lines = event.entries.map((s: any) => {
-              let line = `**${s.app}** — "${s.windowTitle}"`;
-              if (s.texts?.length) line += `\n${s.texts.join("\n")}`;
-              return line;
-            });
-            await mcp.notification({
-              method: "notifications/claude/channel",
-              params: {
-                content: `[${channelName}] Screen update:\n\n${lines.join("\n\n")}`,
-                meta: {
-                  source: "tunr",
-                  event: "screen",
-                  channel: channelName,
-                  timestamp: event.timestamp,
-                },
-              },
-            });
-          }
-        } catch {}
-      }
-    } catch {}
+      // New screen records
+      const screens = db.prepare(
+        "SELECT id, timestamp, app, window_title, texts, channel_names FROM screen_states WHERE id > ? ORDER BY id"
+      ).all(lastScreenId) as any[];
 
-    // Check for per-channel audio events
-    try {
-      const files = readdirSync(DATA_DIR).filter(f => f.startsWith("channel_audio_") && f.endsWith(".json"));
-      for (const file of files) {
-        const filePath = join(DATA_DIR, file);
-        try {
-          const raw = await Bun.file(filePath).text();
-          unlinkSync(filePath);
-          const event = JSON.parse(raw);
-          const channelName = file.replace("channel_audio_", "").replace(".json", "");
+      for (const r of screens) {
+        lastScreenId = r.id;
+        const chans: string[] = r.channel_names ? JSON.parse(r.channel_names) : [];
+        const matched = chans.filter(ch => subNames.includes(ch));
+        if (matched.length === 0) continue;
 
+        const texts = JSON.parse(r.texts) as string[];
+        const content = `**${r.app}** — "${r.window_title}"\n${texts.join("\n")}`;
+
+        for (const ch of matched) {
           await mcp.notification({
             method: "notifications/claude/channel",
             params: {
-              content: `[${channelName}] Audio transcript:\n${event.transcript}`,
-              meta: {
-                source: "tunr",
-                event: "audio",
-                channel: channelName,
-                timestamp: event.timestamp,
-              },
+              content: `[${ch}] Screen update:\n\n${content}`,
+              meta: { source: "tunr", event: "screen", channel: ch, timestamp: r.timestamp },
             },
           });
-        } catch {}
+        }
       }
-    } catch {}
+
+      // New audio records
+      const audios = db.prepare(
+        "SELECT id, timestamp, transcript FROM audio_transcripts WHERE id > ? ORDER BY id"
+      ).all(lastAudioId) as any[];
+
+      // Find channels with audio enabled
+      const audioChans = db.prepare("SELECT name FROM channels WHERE include_audio = 1").all() as any[];
+      const audioSubbed = audioChans.map((c: any) => c.name).filter((n: string) => subNames.includes(n));
+
+      for (const r of audios) {
+        lastAudioId = r.id;
+        if (audioSubbed.length === 0) continue;
+
+        for (const ch of audioSubbed) {
+          await mcp.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: `[${ch}] Audio transcript:\n${r.transcript}`,
+              meta: { source: "tunr", event: "audio", channel: ch, timestamp: r.timestamp },
+            },
+          });
+        }
+      }
+    } finally {
+      db.close();
+    }
   }
 }
 
 await mcp.connect(new StdioServerTransport());
-pollChannelEvents();
+pollDb();

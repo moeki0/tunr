@@ -13,7 +13,7 @@ import { unlinkSync } from "fs";
 
 import type { TrackedSource, Capture, DayCount } from "./lib/types";
 import type { View, SettingsTab, FocusArea } from "./lib/types";
-import { DATA_DIR, DB_PATH, SETTINGS_PATH, AUDIO_DIR, AUDIO_SOURCE_KEY, POLL_MS, savedAudioChunkSec, savedSettings } from "./lib/constants";
+import { DB_PATH, SETTINGS_PATH, AUDIO_DIR, AUDIO_SOURCE_KEY, POLL_MS, savedAudioChunkSec, savedSettings } from "./lib/constants";
 import { db, insertStmt, insertAudioStmt, localDateStr, getRecentCaptures, getDailyCounts, getHourlyCountsForDate, getCapturesForDate } from "./lib/db";
 import { getChannels, getActiveSubscriptions } from "./lib/rules";
 import { generateEmbedding, getAllWindows, windowKey } from "./lib/capture";
@@ -33,7 +33,6 @@ function App() {
   const [recordCount, setRecordCount] = useState(
     () => (db.prepare("SELECT count(*) as c FROM screen_states").get() as any).c
   );
-  const [broadcastCount, setBroadcastCount] = useState(0);
   const [screenIntervalSec, setScreenIntervalSec] = useState(
     typeof savedSettings.screenIntervalSec === "number" ? savedSettings.screenIntervalSec : 5
   );
@@ -251,11 +250,7 @@ function App() {
         const found = await getAllWindows();
         const foundMap = new Map(found.map((w) => [windowKey(w), w]));
         const ts = new Date().toISOString();
-        const chList = getChannels();
-        const subs = getActiveSubscriptions();
         const currentWindows = windowsRef.current;
-
-        const perChannel = new Map<string, { app: string; title: string; texts: string[] }[]>();
 
         for (const [, w] of foundMap) {
           if (!w.texts || w.texts.length === 0) continue;
@@ -275,19 +270,6 @@ function App() {
           const embedding = generateEmbedding(w.texts.join("\n"));
           insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, textsJson, embedding, null, channelNamesJson);
           setRecordCount((c) => c + 1);
-
-          for (const ch of chans) {
-            if (subs.includes(ch)) {
-              if (!perChannel.has(ch)) perChannel.set(ch, []);
-              perChannel.get(ch)!.push({ app: w.app, title: w.title, texts: w.texts });
-            }
-          }
-        }
-
-        for (const [ch, entries] of perChannel) {
-          const eventPath = join(DATA_DIR, `channel_event_${ch}.json`);
-          await Bun.write(eventPath, JSON.stringify({ timestamp: ts, channel: ch, entries }));
-          setBroadcastCount((c) => c + 1);
         }
       }
     }
@@ -341,15 +323,7 @@ function App() {
               if (transcript) {
                 insertAudioStmt.run(chunk.timestamp, chunk.file, transcript);
                 setLastTranscript(transcript.slice(0, 80));
-                const subs = getActiveSubscriptions();
-                const audioSrc = windowsRef.current.get(AUDIO_SOURCE_KEY);
-                const audioChans = audioSrc?.channels ?? [];
-                const subbedAudioChans = audioChans.filter(ch => subs.includes(ch));
-                for (const chName of subbedAudioChans) {
-                  const audioEventPath = join(DATA_DIR, `channel_audio_${chName}.json`);
-                  await Bun.write(audioEventPath, JSON.stringify({ timestamp: chunk.timestamp, channel: chName, transcript }));
-                  setAudioBroadcastCount((c) => c + 1);
-                }
+                setAudioBroadcastCount((c) => c + 1);
               }
             } catch {}
           }
