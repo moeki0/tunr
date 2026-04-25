@@ -241,13 +241,12 @@ function App() {
   // Record allowed windows periodically (with dedup) + event-driven capture
   useEffect(() => {
     let active = true;
-    const lastRecorded = new Map<string, string>(); // windowKey -> title + texts hash
     const lastScreenshot = new Map<string, string>(); // windowKey -> last screenshot path
     const IMAGE_DIFF_PATH = join(dirname(process.execPath), "uitocc-image-diff");
     const IMAGE_DIFF_FALLBACK = join(import.meta.dir, "uitocc-image-diff");
     const EVENT_MONITOR_PATH = join(dirname(process.execPath), "uitocc-event-monitor");
     const EVENT_MONITOR_FALLBACK = join(import.meta.dir, "uitocc-event-monitor");
-    const DIFF_THRESHOLD = 0.01;
+    const DIFF_THRESHOLD = 0.05; // 5% pixel change threshold
     let pendingEventCapture = false;
 
     // Start event monitor (scroll + key detection)
@@ -297,48 +296,32 @@ function App() {
         for (const tw of allowedWindows) {
           const key = windowKey(tw);
           const w = foundMap.get(key);
-          if (!w) continue;
-          const uniqueTexts = [...new Set(w.texts)];
-          const textsJson = JSON.stringify(uniqueTexts);
-          const normalizedTitle = w.title.replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠐⠂⠄⠠⠈⠁✳⣾⣽⣻⢿⡿⣟⣯⣷⠀]/g, "").trim();
-          const fingerprint = `${normalizedTitle}\0${textsJson}`;
-          const textChanged = lastRecorded.get(key) !== fingerprint;
+          if (!w || !w.window_id) continue;
 
-          // Always capture screenshot for pixel diff
-          let screenshotPath: string | null = null;
-          let visuallyChanged = false;
-          if (w.window_id) {
-            const filename = `${ts.replace(/[:.]/g, "-")}_${w.pid}_${w.window_index}.jpg`;
-            const filepath = join(SCREENSHOTS_DIR, filename);
-            const sc = Bun.spawnSync(["/usr/sbin/screencapture", `-l${w.window_id}`, "-x", "-t", "jpg", filepath]);
-            if (sc.exitCode === 0) {
-              Bun.spawnSync(["sips", "--resampleWidth", "800", "-s", "formatOptions", "60", filepath], { stdout: "pipe", stderr: "pipe" });
-              const prevPath = lastScreenshot.get(key);
-              if (!prevPath || !hasImageDiff) {
-                visuallyChanged = true;
-              } else {
-                const diff = Bun.spawnSync([imageDiffBin, prevPath, filepath], { stdout: "pipe" });
-                const ratio = parseFloat(diff.stdout.toString().trim());
-                visuallyChanged = isNaN(ratio) || ratio > DIFF_THRESHOLD;
-              }
+          const filename = `${ts.replace(/[:.]/g, "-")}_${w.pid}_${w.window_index}.jpg`;
+          const filepath = join(SCREENSHOTS_DIR, filename);
+          const sc = Bun.spawnSync(["/usr/sbin/screencapture", `-l${w.window_id}`, "-x", "-t", "jpg", filepath]);
+          if (sc.exitCode !== 0) continue;
+          Bun.spawnSync(["sips", "--resampleWidth", "800", "-s", "formatOptions", "60", filepath], { stdout: "pipe", stderr: "pipe" });
 
-              if (textChanged || visuallyChanged) {
-                screenshotPath = filepath;
-                lastScreenshot.set(key, filepath);
-                changedScreenshots.push({ app: w.app, title: w.title, path: filepath });
-              } else {
-                try { unlinkSync(filepath); } catch {}
-              }
-            }
+          const prevPath = lastScreenshot.get(key);
+          let changed = false;
+          if (!prevPath || !hasImageDiff) {
+            changed = true;
+          } else {
+            const diff = Bun.spawnSync([imageDiffBin, prevPath, filepath], { stdout: "pipe" });
+            const ratio = parseFloat(diff.stdout.toString().trim());
+            changed = isNaN(ratio) || ratio > DIFF_THRESHOLD;
           }
 
-          if (!textChanged && !visuallyChanged) continue;
-          lastRecorded.set(key, fingerprint);
-
-          const textForEmbed = `${w.app} ${w.title} ${w.texts.slice(0, 10).join(" ")}`.slice(0, 1000);
-          const emb = generateEmbedding(textForEmbed);
-          insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, textsJson, emb, screenshotPath);
-          setRecordCount((c) => c + 1);
+          if (changed) {
+            lastScreenshot.set(key, filepath);
+            changedScreenshots.push({ app: w.app, title: w.title, path: filepath });
+            insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, "[]", null, filepath);
+            setRecordCount((c) => c + 1);
+          } else {
+            try { unlinkSync(filepath); } catch {}
+          }
         }
 
         // Broadcast all changed screenshots as a single TV event
