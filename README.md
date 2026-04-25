@@ -1,6 +1,17 @@
 # uitocc
 
-Screen context provider for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Captures your macOS screen via the Accessibility API and delivers what you're looking at — visible text, window titles — directly into your Claude Code session through MCP.
+Screen & audio context provider for [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+
+uitocc captures your macOS screen and system audio, then delivers it to Claude Code through MCP — so Claude can see what you're looking at and hear what you're listening to.
+
+## What it does
+
+- **Screen recording** — Captures visible text, window titles, and screenshots from your macOS windows via the Accessibility API
+- **Audio recording** — Captures system audio via BlackHole virtual audio device and transcribes it locally with whisper.cpp
+- **TV channel** — Streams screen changes to Claude Code in real-time
+- **RADIO channel** — Streams audio transcriptions to Claude Code in real-time
+- **Search** — Claude Code can search your screen and audio history via MCP tools
+- **Privacy-first** — All data stays local. Per-window permission control. No data leaves your machine unless Claude Code reads it.
 
 ## Install
 
@@ -8,75 +19,193 @@ Screen context provider for [Claude Code](https://docs.anthropic.com/en/docs/cla
 brew install moeki0/uitocc/uitocc
 ```
 
-Grant Accessibility and Screen Recording permissions to your terminal app.
+### Permissions
 
-Register the MCP server:
+Grant these permissions to your terminal app (System Settings > Privacy & Security):
+
+- **Accessibility** — Required for reading window text
+- **Screen Recording** — Required for capturing screenshots
+
+### MCP server setup
+
+Register the MCP server with Claude Code:
 
 ```bash
 claude mcp add -s user uitocc -- uitocc mcp
 ```
 
-Start Claude Code with channels enabled:
+Start Claude Code with channels enabled (required for TV/RADIO real-time streaming):
 
 ```bash
 claude --dangerously-load-development-channels server:uitocc
 ```
 
+### Audio setup (optional)
+
+Audio capture requires [BlackHole](https://github.com/ExistentialAudio/BlackHole) as a virtual audio loopback device.
+
+1. Install BlackHole:
+
+```bash
+brew install --cask blackhole-2ch
+```
+
+2. Open **Audio MIDI Setup** (in /Applications/Utilities)
+3. Click **+** at the bottom left and select **Create Multi-Output Device**
+4. Check both your speakers/headphones and **BlackHole 2ch**
+5. Set the multi-output device as your system output
+
+Download the whisper.cpp model for transcription:
+
+```bash
+curl -L -o ~/.cache/whisper-cpp-small.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+```
+
+Install whisper-cpp (if not already installed):
+
+```bash
+brew install whisper-cpp
+```
+
 ## Usage
 
-### Watch daemon (continuous)
+### Watch daemon
 
-Start the TUI daemon to continuously observe your screen:
+Start the TUI daemon:
 
 ```bash
 uitocc watch
 ```
 
-A terminal UI shows all detected windows. Each new window triggers a permission prompt — press `y` to allow observation or `n` to deny. Allowed windows are periodically recorded to a local SQLite database.
+This opens a terminal UI with two main sections:
 
-Claude Code can then search your screen history via MCP tools:
+#### RECORDING
 
-- `search_screen_history(query, minutes?, limit?)` — search observed screen text by keyword
-- `recent_screens(minutes?, limit?)` — list recent screen states
+Records your screen and audio to a local SQLite database.
+
+- **SCREEN** — Shows all detected windows. New windows trigger a permission prompt. Allowed windows are periodically recorded (text + screenshots). Content changes are deduplicated automatically.
+- **AUDIO** — Captures system audio in 10-second chunks and transcribes them locally with whisper.cpp. Shows the latest transcription.
+
+#### BROADCAST
+
+Streams recordings to Claude Code in real-time via MCP channel events.
+
+- **TV** — When enabled, screen content changes are pushed to Claude Code as they happen
+- **RADIO** — When enabled, audio transcriptions are pushed to Claude Code every ~10 seconds
+
+### TUI controls
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` | Navigate feed list |
+| `T` | Toggle selected feed (allow/deny) |
+| `Y` / `N` | Grant/deny new feed |
+| `A` | Toggle audio recording on/off |
+| `1` | Toggle TV channel on/off |
+| `2` | Toggle RADIO channel on/off |
+| `Q` | Quit |
 
 ### Send (one-shot)
 
-Run from a keyboard shortcut (e.g. via Raycast or macOS Shortcuts):
+Capture the frontmost window and send it to Claude Code instantly:
 
 ```bash
 uitocc send
 ```
 
-Captures the frontmost app's window title, visible text, and cursor context, then sends it as a channel event to Claude Code.
+Bind this to a keyboard shortcut (e.g. via Raycast or macOS Shortcuts) for quick screen sharing.
+
+## MCP Tools
+
+These tools are available to Claude Code when the MCP server is running:
+
+### Screen tools
+
+| Tool | Description |
+|------|-------------|
+| `search_screen_history(query, app?, minutes?, limit?)` | Search screen text by keyword. Filter by app/window name with `app` parameter |
+| `recent_screens(app?, minutes?, limit?)` | Get recent screen states with screenshots |
+
+### Audio tools
+
+| Tool | Description |
+|------|-------------|
+| `recent_audio(minutes?, limit?)` | Get recent audio transcriptions |
+| `search_audio(query, minutes?, limit?)` | Search audio transcriptions by keyword |
+
+### Channel controls
+
+| Tool | Description |
+|------|-------------|
+| `toggle_tv(enabled)` | Enable/disable real-time screen change notifications |
+| `toggle_radio(enabled)` | Enable/disable real-time audio transcription notifications |
 
 ## Plugin
 
-uitocc includes a Claude Code plugin that auto-invokes when you reference screen content (e.g. "what was I just looking at", "that page I had open"). Install as a plugin to enable this:
-
-In Claude Code:
+uitocc includes a Claude Code plugin that auto-invokes when you reference screen or audio content (e.g. "what was I just looking at", "what did they say in the video").
 
 ```
-/plugin marketplace add moeki0/uitocc-skill
-/plugin install uitocc@uitocc-skill
+/install-plugin moeki0/uitocc-skill
 ```
 
 ## Architecture
 
 ```
-                          ┌──────────────┐
-uitocc watch ──poll──▶    │  SQLite DB   │
-  (TUI daemon)            └──────┬───────┘
-  per-window permissions         │
-                          ┌──────▼───────┐
-uitocc send ──────────▶   │mcp-server.ts │───▶ Claude Code
-  (one-shot, AX API)      │ (MCP/stdio)  │
-                          └──────────────┘
+┌─────────────────────────────────────────────────────┐
+│                  uitocc watch (TUI)                  │
+│                                                     │
+│  ┌─ RECORDING ────────────────────────────────────┐ │
+│  │                                                │ │
+│  │  SCREEN                     AUDIO              │ │
+│  │  ├ AX API polling           ├ BlackHole capture│ │
+│  │  ├ Per-window permissions   ├ whisper.cpp      │ │
+│  │  ├ Screenshots              └ Transcriptions   │ │
+│  │  └ Text extraction                             │ │
+│  │           │                        │           │ │
+│  │           ▼                        ▼           │ │
+│  │        ┌──────────────────────────────┐        │ │
+│  │        │     SQLite (local DB)        │        │ │
+│  │        └──────────────────────────────┘        │ │
+│  └────────────────────────────────────────────────┘ │
+│                                                     │
+│  ┌─ BROADCAST ────────────────────────────────────┐ │
+│  │  TV  ●══▶ ┐                                    │ │
+│  │           ├──▶ channel events                  │ │
+│  │  RADIO ●══▶ ┘                                  │ │
+│  └────────────────────────────────────────────────┘ │
+└──────────────────┬──────────────────────────────────┘
+                   │
+                   ▼
+          ┌────────────────┐
+          │ mcp-server.ts  │
+          │  (MCP/stdio)   │──────▶  Claude Code
+          │                │  tools / channels
+          └────────────────┘
+
+uitocc send ──────────────────────▶  channel event
+  (one-shot, AX API)
 ```
 
-- **uitocc watch** — TUI daemon (Ink/React) that polls all windows, asks per-window permission, records allowed window text to SQLite
-- **uitocc mcp** — MCP server with `search_screen_history` / `recent_screens` tools, plus channel notifications for `uitocc send`
-- **uitocc send** — Captures current window text and cursor context via Accessibility API
-- **uitocc-ax-text** — Extracts visible text from windows (`--all` for all windows as JSON)
+### Components
+
+| File | Description |
+|------|-------------|
+| `daemon.tsx` | TUI daemon (Ink/React). Polls windows, manages permissions, records to SQLite, manages audio capture |
+| `mcp-server.ts` | MCP server. Provides search/history tools and channel event polling |
+| `cli.ts` | CLI entry point (`watch`, `mcp`, `send`, `--version`) |
+| `ax_text.swift` | Accessibility API text extractor. `--all` returns all windows as JSON with window IDs |
+| `send.swift` | One-shot screen capture. Writes channel event JSON |
+| `embed.swift` | NLEmbedding (macOS NaturalLanguage framework) for 512-dim sentence embeddings used in vector search |
+| `audio_capture.swift` | System audio capture via AVFoundation + BlackHole. Records WAV chunks at 16kHz mono |
+
+### Data storage
+
+All data is stored locally at `~/Library/Application Support/uitocc/`:
+
+- `uitocc.db` — SQLite database with screen states and audio transcripts
+- `screenshots/` — Window screenshots (auto-cleaned after 24h)
+- `audio/` — Audio WAV chunks (auto-cleaned after 24h)
 
 ## License
 
