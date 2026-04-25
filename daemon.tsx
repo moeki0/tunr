@@ -329,6 +329,20 @@ function App() {
         return;
       }
 
+      // Check whisper-cli and model
+      const whisperCheck = Bun.spawnSync(["which", "whisper-cli"], { stdout: "pipe", stderr: "pipe" });
+      if (whisperCheck.exitCode !== 0) {
+        setAudioStatus("disabled — whisper-cpp not installed (brew install whisper-cpp)");
+        setAudioEnabled(false);
+        return;
+      }
+      const modelPath = join(homedir(), ".cache", "whisper-cpp-small.bin");
+      if (!await Bun.file(modelPath).exists()) {
+        setAudioStatus("disabled — whisper model not found (~/.cache/whisper-cpp-small.bin)");
+        setAudioEnabled(false);
+        return;
+      }
+
       while (active) {
         if (!audioEnabledRef.current) {
           setAudioStatus("off");
