@@ -371,32 +371,34 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 async function pollChannelEvents() {
   while (true) {
     await Bun.sleep(1000);
-    if (!existsSync(CHANNEL_EVENT_PATH)) continue;
 
-    try {
-      const raw = await Bun.file(CHANNEL_EVENT_PATH).text();
-      unlinkSync(CHANNEL_EVENT_PATH);
-      const event = JSON.parse(raw);
+    // Check for screen events
+    if (existsSync(CHANNEL_EVENT_PATH)) {
+      try {
+        const raw = await Bun.file(CHANNEL_EVENT_PATH).text();
+        unlinkSync(CHANNEL_EVENT_PATH);
+        const event = JSON.parse(raw);
 
-      let content = `User is looking at: **${event.app}** — "${event.windowTitle}"`;
-      if (event.cursorText) content += `\n\nText at cursor:\n${event.cursorText}`;
-      if (event.contextTexts?.length > 0) {
-        content += `\n\nVisible text:\n${event.contextTexts.map((t: string) => `- ${t}`).join("\n")}`;
-      }
+        let content = `User is looking at: **${event.app}** — "${event.windowTitle}"`;
+        if (event.cursorText) content += `\n\nText at cursor:\n${event.cursorText}`;
+        if (event.contextTexts?.length > 0) {
+          content += `\n\nVisible text:\n${event.contextTexts.map((t: string) => `- ${t}`).join("\n")}`;
+        }
 
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content,
-          meta: {
-            source: "uitocc",
-            event: "user_send",
-            app: event.app,
-            windowTitle: event.windowTitle,
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content,
+            meta: {
+              source: "uitocc",
+              event: "user_send",
+              app: event.app,
+              windowTitle: event.windowTitle,
+            },
           },
-        },
-      });
-    } catch {}
+        });
+      } catch {}
+    }
 
     // Check for audio transcript events
     if (audioChannelEnabled && existsSync(CHANNEL_AUDIO_EVENT_PATH)) {
