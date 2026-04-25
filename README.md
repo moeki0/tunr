@@ -60,7 +60,7 @@ In Claude Code:
 
 ```
 /plugin marketplace add moeki0/uitocc-skill
-/plugin install uitocc@uitocc
+/plugin install uitocc@uitocc-skill
 ```
 
 ## Architecture
