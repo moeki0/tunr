@@ -405,6 +405,7 @@ function App() {
         const fields: Array<"app" | "title" | "url"> = ["app", "title", "url"];
         const idx = fields.indexOf(denyCreateField);
         setDenyCreateField(fields[(idx + 1) % fields.length]);
+        setDenyCreateValue("");
       }
       if (key.escape) { setDenyCreateMode(false); }
       return;
