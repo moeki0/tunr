@@ -469,9 +469,25 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   return { content: [{ type: "text" as const, text: "Unknown tool" }] };
 });
 
+// Simple unified diff between two text arrays
+function makeDiff(oldLines: string[], newLines: string[]): string {
+  const result: string[] = [];
+  const oldSet = new Set(oldLines);
+  const newSet = new Set(newLines);
+  for (const line of oldLines) {
+    if (!newSet.has(line)) result.push(`- ${line}`);
+  }
+  for (const line of newLines) {
+    if (!oldSet.has(line)) result.push(`+ ${line}`);
+  }
+  return result.join("\n");
+}
+
 // Poll DB for new screen/audio records and notify subscribed channels
 let lastScreenId = 0;
 let lastAudioId = 0;
+// Track last notified content per window (keyed by "app\0window_title")
+const lastNotified = new Map<string, { title: string; texts: string[] }>();
 
 async function pollDb() {
   // Initialize cursors to latest IDs
@@ -500,7 +516,7 @@ async function pollDb() {
 
       // New screen records
       const screens = db.prepare(
-        "SELECT id, timestamp, app, window_title, texts, channel_names FROM screen_states WHERE id > ? ORDER BY id"
+        "SELECT id, timestamp, pid, window_index, app, window_title, texts, channel_names FROM screen_states WHERE id > ? ORDER BY id"
       ).all(lastScreenId) as any[];
 
       for (const r of screens) {
@@ -510,7 +526,19 @@ async function pollDb() {
         if (matched.length === 0) continue;
 
         const texts = JSON.parse(r.texts) as string[];
-        const content = `**${r.app}** — "${r.window_title}"\n${texts.join("\n")}`;
+        const wKey = `${r.pid}:${r.window_index}`;
+        const prev = lastNotified.get(wKey);
+
+        let content: string;
+        if (!prev || prev.title !== r.window_title) {
+          // New window or title changed (page navigation) — full text as all-add diff
+          content = `**${r.app}** — "${r.window_title}"\n${texts.map(l => `+ ${l}`).join("\n")}`;
+        } else {
+          // Same window & title, text changed — diff only
+          const diff = makeDiff(prev.texts, texts);
+          content = `**${r.app}** — "${r.window_title}"\n${diff}`;
+        }
+        lastNotified.set(wKey, { title: r.window_title, texts });
 
         for (const ch of matched) {
           await mcp.notification({
