@@ -17,6 +17,7 @@ import { DB_PATH, SETTINGS_PATH, AUDIO_DIR, AUDIO_SOURCE_KEY, POLL_MS, savedAudi
 import { db, insertStmt, insertAudioStmt, localDateStr, getRecentCaptures, getDailyCounts, getHourlyCountsForDate, getCapturesForDate } from "./lib/db";
 import { getChannels, getActiveSubscriptions } from "./lib/rules";
 import { generateEmbedding, getAllWindows, windowKey } from "./lib/capture";
+import { checkForUpdate } from "./lib/update-check";
 
 // ===== TUI =====
 
@@ -111,6 +112,14 @@ function App() {
 
   // Delete confirm
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+
+  // Update check
+  const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
+  useEffect(() => {
+    import("../../package.json").then(pkg =>
+      checkForUpdate(pkg.version).then(setUpdateAvailable)
+    );
+  }, []);
 
   // Storage size
   const [dbSizeMB, setDbSizeMB] = useState(0);
@@ -615,6 +624,7 @@ function App() {
         <Text color="gray">[{screenIntervalSec}s]</Text>
       </Box>
       <Box gap={2}>
+        {updateAvailable && <Text color="yellow">v{updateAvailable} available · brew upgrade tunr</Text>}
         <Text color="gray">[C]alendar [S]ettings [Q]uit</Text>
       </Box>
     </Box>
