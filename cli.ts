@@ -23,6 +23,10 @@ switch (command) {
   case "watch":
     await import("./daemon.tsx");
     break;
+  case "--version":
+  case "-v":
+    console.log((await import("./package.json")).version);
+    break;
   default:
     console.log(`uitocc — Screen context provider for Claude Code
 
