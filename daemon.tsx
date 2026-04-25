@@ -238,20 +238,49 @@ function App() {
     setPendingKey(null);
   }, [windows, pendingKey]);
 
-  // Record allowed windows periodically (with dedup)
+  // Record allowed windows periodically (with dedup) + event-driven capture
   useEffect(() => {
     let active = true;
     const lastRecorded = new Map<string, string>(); // windowKey -> title + texts hash
     const lastScreenshot = new Map<string, string>(); // windowKey -> last screenshot path
     const IMAGE_DIFF_PATH = join(dirname(process.execPath), "uitocc-image-diff");
     const IMAGE_DIFF_FALLBACK = join(import.meta.dir, "uitocc-image-diff");
-    const DIFF_THRESHOLD = 0.01; // 1% pixel change = significant
+    const EVENT_MONITOR_PATH = join(dirname(process.execPath), "uitocc-event-monitor");
+    const EVENT_MONITOR_FALLBACK = join(import.meta.dir, "uitocc-event-monitor");
+    const DIFF_THRESHOLD = 0.01;
+    let pendingEventCapture = false;
+
+    // Start event monitor (scroll + key detection)
+    async function startEventMonitor() {
+      const monBin = await Bun.file(EVENT_MONITOR_PATH).exists() ? EVENT_MONITOR_PATH : EVENT_MONITOR_FALLBACK;
+      if (!await Bun.file(monBin).exists()) return;
+      const proc = Bun.spawn([monBin], { stdout: "pipe", stderr: "pipe" });
+      const reader = proc.stdout.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (active) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() || "";
+        for (const line of lines) {
+          if (line.trim()) pendingEventCapture = true;
+        }
+      }
+    }
+    startEventMonitor();
 
     async function record() {
       const imageDiffBin = await Bun.file(IMAGE_DIFF_PATH).exists() ? IMAGE_DIFF_PATH : IMAGE_DIFF_FALLBACK;
       const hasImageDiff = await Bun.file(imageDiffBin).exists();
       while (active) {
-        await Bun.sleep(RECORD_MS);
+        // Wait for timer or event trigger
+        if (!pendingEventCapture) {
+          await Bun.sleep(RECORD_MS);
+        }
+        pendingEventCapture = false;
+
         const allowedWindows: TrackedWindow[] = [];
         for (const [, w] of windowsRef.current) {
           if (w.permission === "allowed") allowedWindows.push(w);
@@ -262,6 +291,8 @@ function App() {
         const found = await getAllWindows();
         const foundMap = new Map(found.map((w) => [windowKey(w), w]));
         const ts = new Date().toISOString();
+        const time = ts.slice(11, 19);
+        const changedScreenshots: { app: string; title: string; path: string }[] = [];
 
         for (const tw of allowedWindows) {
           const key = windowKey(tw);
@@ -281,7 +312,6 @@ function App() {
             const filepath = join(SCREENSHOTS_DIR, filename);
             const sc = Bun.spawnSync(["/usr/sbin/screencapture", `-l${w.window_id}`, "-x", filepath]);
             if (sc.exitCode === 0) {
-              // Compare with previous screenshot
               const prevPath = lastScreenshot.get(key);
               if (!prevPath || !hasImageDiff) {
                 visuallyChanged = true;
@@ -294,8 +324,8 @@ function App() {
               if (textChanged || visuallyChanged) {
                 screenshotPath = filepath;
                 lastScreenshot.set(key, filepath);
+                changedScreenshots.push({ app: w.app, title: w.title, path: filepath });
               } else {
-                // No change — delete temp screenshot
                 try { unlinkSync(filepath); } catch {}
               }
             }
@@ -308,20 +338,22 @@ function App() {
           const emb = generateEmbedding(textForEmbed);
           insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, textsJson, emb, screenshotPath);
           setRecordCount((c) => c + 1);
-          const time = ts.slice(11, 19);
           addScreenLog(`${time} ${w.app} — ${(w.title || "").slice(0, 30)}`);
-          // TV channel event
-          if (tvChannelRef.current) {
-            const tvEventPath = join(DATA_DIR, "channel_tv_event.json");
-            await Bun.write(tvEventPath, JSON.stringify({
-              timestamp: ts,
-              app: w.app,
-              windowTitle: w.title,
-              texts: uniqueTexts,
-              screenshotPath: screenshotPath,
-            }));
-            addBroadcastLog(`${time} TV → ${w.app} — ${(w.title || "").slice(0, 20)}`);
-          }
+        }
+
+        // Broadcast all changed screenshots as a single TV event
+        if (tvChannelRef.current && changedScreenshots.length > 0) {
+          const tvEventPath = join(DATA_DIR, "channel_tv_event.json");
+          await Bun.write(tvEventPath, JSON.stringify({
+            timestamp: ts,
+            screenshots: changedScreenshots.map((s) => ({
+              app: s.app,
+              windowTitle: s.title,
+              screenshotPath: s.path,
+            })),
+          }));
+          const names = changedScreenshots.map((s) => s.app).join(", ");
+          addBroadcastLog(`${time} TV → ${names}`);
         }
       }
     }

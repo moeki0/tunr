@@ -445,26 +445,34 @@ async function pollChannelEvents() {
         unlinkSync(CHANNEL_TV_EVENT_PATH);
         const event = JSON.parse(raw);
 
-        let textContent = `Screen: **${event.app}** — "${event.windowTitle}"`;
-        if (event.screenshotPath) {
-          textContent += `\nScreenshot: ${event.screenshotPath}`;
-        }
-        if (event.texts?.length > 0) {
-          textContent += `\n\n${event.texts.join("\n")}`;
-        }
-
-        await mcp.notification({
-          method: "notifications/claude/channel",
-          params: {
-            content: textContent,
-            meta: {
-              source: "uitocc",
-              event: "tv",
-              app: event.app,
-              windowTitle: event.windowTitle,
+        // New format: multiple screenshots
+        if (event.screenshots) {
+          const lines = event.screenshots.map((s: any) =>
+            `**${s.app}** — "${s.windowTitle}"\nScreenshot: ${s.screenshotPath}`
+          );
+          await mcp.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: `Screen update:\n\n${lines.join("\n\n")}`,
+              meta: {
+                source: "uitocc",
+                event: "tv",
+                timestamp: event.timestamp,
+              },
             },
-          },
-        });
+          });
+        } else {
+          // Legacy single-window format
+          let textContent = `Screen: **${event.app}** — "${event.windowTitle}"`;
+          if (event.screenshotPath) textContent += `\nScreenshot: ${event.screenshotPath}`;
+          await mcp.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: textContent,
+              meta: { source: "uitocc", event: "tv", app: event.app, windowTitle: event.windowTitle },
+            },
+          });
+        }
       } catch {}
     }
 
