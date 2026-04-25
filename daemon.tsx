@@ -140,6 +140,7 @@ function App() {
   const [windows, setWindows] = useState<Map<string, TrackedWindow>>(new Map());
   const windowsRef = useRef<Map<string, TrackedWindow>>(new Map());
   const [pendingKey, setPendingKey] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [recordCount, setRecordCount] = useState(0);
   const [screenSize, setScreenSize] = useState("0 MB");
   const [audioSize, setAudioSize] = useState("0 MB");
@@ -307,10 +308,11 @@ function App() {
           let screenshotPath: string | null = null;
           let visuallyChanged = false;
           if (w.window_id) {
-            const filename = `${ts.replace(/[:.]/g, "-")}_${w.pid}_${w.window_index}.png`;
+            const filename = `${ts.replace(/[:.]/g, "-")}_${w.pid}_${w.window_index}.jpg`;
             const filepath = join(SCREENSHOTS_DIR, filename);
-            const sc = Bun.spawnSync(["/usr/sbin/screencapture", `-l${w.window_id}`, "-x", filepath]);
+            const sc = Bun.spawnSync(["/usr/sbin/screencapture", `-l${w.window_id}`, "-x", "-t", "jpg", filepath]);
             if (sc.exitCode === 0) {
+              Bun.spawnSync(["sips", "--resampleWidth", "800", "-s", "formatOptions", "60", filepath], { stdout: "pipe", stderr: "pipe" });
               const prevPath = lastScreenshot.get(key);
               if (!prevPath || !hasImageDiff) {
                 visuallyChanged = true;
@@ -574,26 +576,26 @@ function App() {
       return;
     }
 
-    // Delete all recorded data
+    // Delete all recorded data (requires confirmation)
     if (input === "d" || input === "D") {
-      db.run("DELETE FROM screen_states");
-      db.run("DELETE FROM audio_transcripts");
-      // Clear screenshot files
-      try {
-        const files = Bun.spawnSync(["find", SCREENSHOTS_DIR, "-name", "*.png", "-delete"], { stdout: "pipe", stderr: "pipe" });
-      } catch {}
-      // Clear audio files
-      try {
-        Bun.spawnSync(["find", AUDIO_DIR, "-name", "*.wav", "-delete"], { stdout: "pipe", stderr: "pipe" });
-      } catch {}
-      setRecordCount(0);
-      setAudioCount(0);
-      setTvBroadcastCount(0);
-      setRadioBroadcastCount(0);
-      setScreenSize("0B");
-      setAudioSize("0B");
+      if (deleteConfirm) {
+        db.run("DELETE FROM screen_states");
+        db.run("DELETE FROM audio_transcripts");
+        try { Bun.spawnSync(["find", SCREENSHOTS_DIR, "-name", "*.jpg", "-delete"], { stdout: "pipe", stderr: "pipe" }); } catch {}
+        try { Bun.spawnSync(["find", AUDIO_DIR, "-name", "*.wav", "-delete"], { stdout: "pipe", stderr: "pipe" }); } catch {}
+        setRecordCount(0);
+        setTvBroadcastCount(0);
+        setRadioBroadcastCount(0);
+        setScreenSize("0B");
+        setAudioSize("0B");
+        setDeleteConfirm(false);
+      } else {
+        setDeleteConfirm(true);
+        setTimeout(() => setDeleteConfirm(false), 3000);
+      }
       return;
     }
+    setDeleteConfirm(false);
 
     // Pending window prompt
     if (pendingKey) {
@@ -773,7 +775,7 @@ function App() {
       {/* Controls */}
       <Box paddingX={1} marginTop={0}>
         <Text color="green">
-          [↑↓] NAV  [T] TOGGLE  [A] MIC  [1] TV  [2] RADIO  [[ ]] INTERVAL  [D] DELETE ALL  [Q] QUIT
+          {deleteConfirm ? <Text color="red" bold>Press D again to DELETE ALL DATA</Text> : "[↑↓] NAV  [T] TOGGLE  [A] MIC  [1] TV  [2] RADIO  [[ ]] INTERVAL  [D] DELETE ALL  [Q] QUIT"}
         </Text>
       </Box>
     </Box>

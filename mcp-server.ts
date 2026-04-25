@@ -309,7 +309,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const texts = JSON.parse(r.texts) as string[];
         content.push({ type: "text" as const, text: `[${r.timestamp}] ${r.app} — ${r.window_title}\n${texts.join("\n")}` });
         if (r.screenshot_path && existsSync(r.screenshot_path)) {
-          content.push({ type: "image" as const, data: readFileSync(r.screenshot_path).toString("base64"), mimeType: "image/png" });
+          const mime = r.screenshot_path.endsWith(".jpg") ? "image/jpeg" : "image/png";
+          content.push({ type: "image" as const, data: readFileSync(r.screenshot_path).toString("base64"), mimeType: mime });
         }
       }
 
