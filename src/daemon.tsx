@@ -11,13 +11,28 @@ import { dirname } from "path";
 import { homedir } from "os";
 import { unlinkSync } from "fs";
 
-import type { TrackedSource, Capture, DayCount } from "./lib/types";
+import type { TrackedSource, Capture, DayCount, DenyRule } from "./lib/types";
 import type { View, SettingsTab, FocusArea } from "./lib/types";
 import { VERSION, DB_PATH, SETTINGS_PATH, AUDIO_DIR, AUDIO_SOURCE_KEY, POLL_MS, savedAudioChunkSec, savedSettings } from "./lib/constants";
 import { db, insertStmt, insertAudioStmt, localDateStr, getRecentCaptures, getDailyCounts, getHourlyCountsForDate, getCapturesForDate } from "./lib/db";
 import { getChannels, getActiveSubscriptions } from "./lib/rules";
 import { generateEmbedding, getAllWindows, windowKey } from "./lib/capture";
 import { checkForUpdate } from "./lib/update-check";
+
+// Glob match: * matches any sequence of characters
+function globMatch(pattern: string, value: string): boolean {
+  const regex = new RegExp("^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
+  return regex.test(value);
+}
+
+function isDenied(denyRules: DenyRule[], app: string, title: string, urls: string[]): boolean {
+  return denyRules.some(rule => {
+    if (rule.app && globMatch(rule.app, app)) return true;
+    if (rule.title && globMatch(rule.title, title)) return true;
+    if (rule.url && urls.some(u => globMatch(rule.url!, u))) return true;
+    return false;
+  });
+}
 
 // ===== TUI =====
 
@@ -90,6 +105,15 @@ function App() {
   const [searchMode, setSearchMode] = useState(false);
   const [captures, setCaptures] = useState<Capture[]>([]);
 
+  // Deny list
+  const [denyList, setDenyList] = useState<DenyRule[]>(
+    Array.isArray(savedSettings.denyList) ? savedSettings.denyList : []
+  );
+  const denyListRef = useRef(denyList);
+  const [denyCreateMode, setDenyCreateMode] = useState(false);
+  const [denyCreateField, setDenyCreateField] = useState<"app" | "title" | "url">("app");
+  const [denyCreateValue, setDenyCreateValue] = useState("");
+
   // Settings state
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [settingsIndex, setSettingsIndex] = useState(0);
@@ -153,16 +177,20 @@ function App() {
   }, []);
   useEffect(() => {
     audioChunkRef.current = audioChunkSec;
-    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, settleSec }, null, 2));
+    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, settleSec, denyList }, null, 2));
   }, [audioChunkSec]);
   useEffect(() => {
     screenIntervalRef.current = screenIntervalSec;
-    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, settleSec }, null, 2));
+    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, settleSec, denyList }, null, 2));
   }, [screenIntervalSec]);
   useEffect(() => {
     settleSecRef.current = settleSec;
-    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, settleSec }, null, 2));
+    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, settleSec, denyList }, null, 2));
   }, [settleSec]);
+  useEffect(() => {
+    denyListRef.current = denyList;
+    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec, settleSec, denyList }, null, 2));
+  }, [denyList]);
 
   // Refresh channels + subscriptions + captures + storage size periodically
   useEffect(() => {
@@ -248,6 +276,9 @@ function App() {
 
           const tw = currentWindows.get(key);
           if (!tw || tw.channels.length === 0) continue;
+
+          // Deny list check — always skip, even if assigned to channels
+          if (isDenied(denyListRef.current, w.app, w.title, w.urls ?? [])) continue;
 
           const textsJson = JSON.stringify(w.texts);
           const state = windowState.get(key);
@@ -368,6 +399,16 @@ function App() {
     if (searchMode) return;
     // Channel create mode
     if (channelCreateMode) return;
+    // Deny create mode
+    if (denyCreateMode) {
+      if (key.tab) {
+        const fields: Array<"app" | "title" | "url"> = ["app", "title", "url"];
+        const idx = fields.indexOf(denyCreateField);
+        setDenyCreateField(fields[(idx + 1) % fields.length]);
+      }
+      if (key.escape) { setDenyCreateMode(false); }
+      return;
+    }
     // Channel picker mode
     if (channelPickerOpen) {
       const chList = getChannels();
@@ -467,7 +508,7 @@ function App() {
 
       // Tab switching in settings
       if (key.tab) {
-        const tabs: SettingsTab[] = ["general", "channels"];
+        const tabs: SettingsTab[] = ["general", "channels", "deny"];
         const idx = tabs.indexOf(settingsTab);
         setSettingsTab(tabs[(idx + 1) % tabs.length]);
         setSettingsIndex(0);
@@ -511,6 +552,19 @@ function App() {
         if ((input === "x" || input === "X") && settingsIndex < chList.length) {
           db.run(`DELETE FROM channels WHERE id = ?`, chList[settingsIndex].id);
           setChannels(getChannels());
+          return;
+        }
+      }
+
+      if (settingsTab === "deny") {
+        if (input === "c" || input === "C") {
+          setDenyCreateMode(true);
+          setDenyCreateField("app");
+          setDenyCreateValue("");
+          return;
+        }
+        if ((input === "x" || input === "X") && settingsIndex < denyList.length) {
+          setDenyList(prev => prev.filter((_, i) => i !== settingsIndex));
           return;
         }
       }
@@ -786,6 +840,7 @@ function App() {
     const tabs: { key: SettingsTab; label: string }[] = [
       { key: "general", label: "General" },
       { key: "channels", label: "Channels" },
+      { key: "deny", label: "Deny List" },
     ];
     return (
       <Box flexDirection="column" paddingX={1} height={rows}>
@@ -860,6 +915,49 @@ function App() {
                     <Text color={sel ? "magenta" : "white"}>{sel ? "▸" : " "}</Text>
                     <Text color="white" bold>{ch.name}</Text>
                     {isSub && <Text color="cyan">SUB</Text>}
+                  </Box>
+                );
+              })}
+            </>
+          )}
+          {settingsTab === "deny" && (
+            <>
+              <Text color="gray" bold dimColor>DENY LIST  [C] create  [X] delete</Text>
+              {denyCreateMode ? (
+                <Box paddingLeft={1} flexDirection="column">
+                  <Box gap={1}>
+                    {(["app", "title", "url"] as const).map(f => (
+                      <Text key={f} color={denyCreateField === f ? "magenta" : "gray"} bold={denyCreateField === f}
+                        underline={denyCreateField === f}>{f}</Text>
+                    ))}
+                    <Text color="gray">← Tab to switch</Text>
+                  </Box>
+                  <Box>
+                    <Text color="magenta">{denyCreateField}: </Text>
+                    <TextInput
+                      value={denyCreateValue}
+                      onChange={setDenyCreateValue}
+                      onSubmit={(val: string) => {
+                        const v = val.trim();
+                        if (v) {
+                          setDenyList(prev => [...prev, { [denyCreateField]: v }]);
+                        }
+                        setDenyCreateMode(false); setDenyCreateValue("");
+                      }}
+                    />
+                  </Box>
+                </Box>
+              ) : null}
+              {denyList.length === 0 ? (
+                <Box paddingLeft={1}><Text color="gray">No deny rules. Press C to create.</Text></Box>
+              ) : denyList.map((rule, i) => {
+                const sel = settingsIndex === i;
+                const desc = rule.app ? `app: ${rule.app}` : rule.title ? `title: ${rule.title}` : rule.url ? `url: ${rule.url}` : "?";
+                return (
+                  <Box key={i} paddingLeft={1} gap={1}>
+                    <Text color={sel ? "magenta" : "white"}>{sel ? "▸" : " "}</Text>
+                    <Text color="red">⊘</Text>
+                    <Text color="white">{desc}</Text>
                   </Box>
                 );
               })}

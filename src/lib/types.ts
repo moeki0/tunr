@@ -46,5 +46,11 @@ export interface DayCount {
 }
 
 export type View = "feed" | "settings" | "detail" | "calendar";
-export type SettingsTab = "general" | "channels";
+export interface DenyRule {
+  app?: string;
+  title?: string;
+  url?: string;
+}
+
+export type SettingsTab = "general" | "channels" | "deny";
 export type FocusArea = "sources" | "feed";
