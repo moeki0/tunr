@@ -112,7 +112,7 @@ function App() {
   const denyListRef = useRef(denyList);
   const [denyCreateMode, setDenyCreateMode] = useState(false);
   const [denyCreateField, setDenyCreateField] = useState<"app" | "title" | "url">("app");
-  const [denyCreateValue, setDenyCreateValue] = useState("");
+  const [denyCreateValues, setDenyCreateValues] = useState<{ app: string; title: string; url: string }>({ app: "", title: "", url: "" });
 
   // Settings state
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
@@ -405,9 +405,8 @@ function App() {
         const fields: Array<"app" | "title" | "url"> = ["app", "title", "url"];
         const idx = fields.indexOf(denyCreateField);
         setDenyCreateField(fields[(idx + 1) % fields.length]);
-        setDenyCreateValue("");
       }
-      if (key.escape) { setDenyCreateMode(false); }
+      if (key.escape) { setDenyCreateMode(false); setDenyCreateValues({ app: "", title: "", url: "" }); }
       return;
     }
     // Channel picker mode
@@ -561,7 +560,7 @@ function App() {
         if (input === "c" || input === "C") {
           setDenyCreateMode(true);
           setDenyCreateField("app");
-          setDenyCreateValue("");
+          setDenyCreateValues({ app: "", title: "", url: "" });
           return;
         }
         if ((input === "x" || input === "X") && settingsIndex < denyList.length) {
@@ -936,14 +935,18 @@ function App() {
                   <Box>
                     <Text color="magenta">{denyCreateField}: </Text>
                     <TextInput
-                      value={denyCreateValue}
-                      onChange={setDenyCreateValue}
-                      onSubmit={(val: string) => {
-                        const v = val.trim();
-                        if (v) {
-                          setDenyList(prev => [...prev, { [denyCreateField]: v }]);
+                      value={denyCreateValues[denyCreateField]}
+                      onChange={(v: string) => setDenyCreateValues(prev => ({ ...prev, [denyCreateField]: v }))}
+                      onSubmit={() => {
+                        const rule: any = {};
+                        if (denyCreateValues.app.trim()) rule.app = denyCreateValues.app.trim();
+                        if (denyCreateValues.title.trim()) rule.title = denyCreateValues.title.trim();
+                        if (denyCreateValues.url.trim()) rule.url = denyCreateValues.url.trim();
+                        if (Object.keys(rule).length > 0) {
+                          setDenyList(prev => [...prev, rule]);
                         }
-                        setDenyCreateMode(false); setDenyCreateValue("");
+                        setDenyCreateMode(false);
+                        setDenyCreateValues({ app: "", title: "", url: "" });
                       }}
                     />
                   </Box>
@@ -953,7 +956,8 @@ function App() {
                 <Box paddingLeft={1}><Text color="gray">No deny rules. Press C to create.</Text></Box>
               ) : denyList.map((rule, i) => {
                 const sel = settingsIndex === i;
-                const desc = rule.app ? `app: ${rule.app}` : rule.title ? `title: ${rule.title}` : rule.url ? `url: ${rule.url}` : "?";
+                const parts = [rule.app && `app: ${rule.app}`, rule.title && `title: ${rule.title}`, rule.url && `url: ${rule.url}`].filter(Boolean);
+                const desc = parts.join(" + ") || "?";
                 return (
                   <Box key={i} paddingLeft={1} gap={1}>
                     <Text color={sel ? "magenta" : "white"}>{sel ? "▸" : " "}</Text>
