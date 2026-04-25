@@ -1,5 +1,8 @@
 #!/usr/bin/env swift
-/// Get visible text from frontmost app using macOS Accessibility API
+/// Get visible text from macOS windows using Accessibility API
+/// Usage:
+///   ax_text           — frontmost window only (legacy output)
+///   ax_text --all     — all windows, JSON array output
 import Cocoa
 import ApplicationServices
 import Foundation
@@ -64,7 +67,47 @@ func getWindowTitle(_ appEl: AXUIElement) -> String {
     return ""
 }
 
-// Get frontmost app info
+func getWindows(_ appEl: AXUIElement) -> [AXUIElement] {
+    axValue(appEl, kAXWindowsAttribute) as? [AXUIElement] ?? []
+}
+
+// --all mode: enumerate all windows from all apps as JSON
+if CommandLine.arguments.contains("--all") {
+    var entries: [[String: Any]] = []
+    let apps = NSWorkspace.shared.runningApplications.filter {
+        $0.activationPolicy == .regular
+    }
+
+    for app in apps {
+        guard let appName = app.localizedName else { continue }
+        let pid = app.processIdentifier
+        let appEl = AXUIElementCreateApplication(pid)
+        let windows = getWindows(appEl)
+
+        for (idx, win) in windows.enumerated() {
+            let title = axValue(win, kAXTitleAttribute) as? String ?? ""
+            var texts: [String] = []
+            collectTexts(win, depth: 0, maxDepth: 5, results: &texts, limit: 50)
+            entries.append([
+                "pid": Int(pid),
+                "window_index": idx,
+                "app": appName,
+                "title": title,
+                "texts": texts,
+            ])
+        }
+    }
+
+    if let data = try? JSONSerialization.data(withJSONObject: entries, options: [.sortedKeys]),
+       let json = String(data: data, encoding: .utf8) {
+        print(json)
+    } else {
+        print("[]")
+    }
+    exit(0)
+}
+
+// Legacy mode: frontmost app only
 guard let frontApp = NSWorkspace.shared.frontmostApplication,
       let appName = frontApp.localizedName else {
     fputs("No frontmost app\n", stderr)

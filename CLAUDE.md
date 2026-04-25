@@ -6,17 +6,24 @@ Screen context provider for Claude Code via MCP channels.
 
 ```bash
 bun install
-swiftc ax_text.swift -o ax_text -O
-swiftc send.swift -o send -O
-bun daemon.ts    # start observer
+swiftc ax_text.swift -o uitocc-ax-text -O
+swiftc send.swift -o uitocc-send -O
+bun daemon.tsx    # start watch daemon with TUI
 ```
 
 ## Architecture
 
-- **daemon.ts**: Polls screen via ax_text, writes actions + screen_states to SQLite
-- **mcp-server.ts**: MCP server, reads DB, pushes channel notifications
+- **daemon.tsx**: TUI daemon (Ink/React) — polls all windows via ax_text, asks per-window permission, records allowed windows to SQLite
+- **mcp-server.ts**: MCP server with search_screen_history / recent_screens tools, plus channel notifications for user_send
 - **send.swift**: One-shot shortcut script, writes channel_event.json
-- **ax_text.swift**: AX API text extractor
+- **ax_text.swift**: AX API text extractor (`--all` for all windows as JSON)
+
+## MCP Tools
+
+- `search_screen_history(query, minutes?, limit?)` — search observed screen text
+- `recent_screens(minutes?, limit?)` — recent screen states
+
+When the user references something they were looking at, or screen context would help understand their request, proactively use these tools.
 
 ## Dedup rules
 

@@ -1,6 +1,8 @@
 node_modules/
-ax_text
-send
+uitocc
+uitocc-ax-text
+uitocc-send
 *.db
+*.bun-build
 .claude/
-.bun-build
+.DS_Store
