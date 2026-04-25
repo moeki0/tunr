@@ -5,7 +5,7 @@
  * Usage:
  *   tunr mcp      Start the MCP server (called by Claude Code)
  *   tunr send     Send current screen to Claude Code
- *   tunr watch    Start the watch daemon with TUI
+ *   tunr start    Start the watch daemon with TUI
  */
 
 const command = process.argv[2];
@@ -20,7 +20,7 @@ switch (command) {
     const result = Bun.spawnSync([sendPath], { stdout: "inherit", stderr: "inherit" });
     process.exit(result.exitCode);
   }
-  case "watch":
+  case "start":
     await import("./daemon.tsx");
     break;
   case "--version":
@@ -33,6 +33,6 @@ switch (command) {
 Usage:
   tunr mcp      Start the MCP server
   tunr send     Send current screen to Claude Code
-  tunr watch    Start the watch daemon with TUI`);
+  tunr start    Start the watch daemon with TUI`);
     process.exit(command ? 1 : 0);
 }

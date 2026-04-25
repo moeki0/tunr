@@ -88,18 +88,17 @@ func getBrowserTabTexts(appScriptName: String) -> [[String: Any]] {
     tell application "\(appScriptName)"
         set output to ""
         repeat with w from 1 to (count of windows)
-            repeat with i from 1 to (count of tabs of window w)
-                set t to title of tab i of window w
-                set u to URL of tab i of window w
-                try
-                    tell tab i of window w
-                        set txt to execute javascript "document.body.innerText.substring(0, 5000)"
-                    end tell
-                on error
-                    set txt to ""
-                end try
-                set output to output & "|||WINDEX=" & w & "|||TINDEX=" & i & "|||TITLE=" & t & "|||URL=" & u & "|||TEXT=" & txt & "|||END"
-            end repeat
+            set i to active tab index of window w
+            set t to title of tab i of window w
+            set u to URL of tab i of window w
+            try
+                tell tab i of window w
+                    set txt to execute javascript "document.body.innerText.substring(0, 5000)"
+                end tell
+            on error
+                set txt to ""
+            end try
+            set output to output & "|||WINDEX=" & w & "|||TINDEX=" & i & "|||TITLE=" & t & "|||URL=" & u & "|||TEXT=" & txt & "|||END"
         end repeat
         return output
     end tell
@@ -132,12 +131,14 @@ func getBrowserTabTexts(appScriptName: String) -> [[String: Any]] {
         let wIdx = Int(extract("WINDEX")) ?? 0
         let tIdx = Int(extract("TINDEX")) ?? 0
         let title = extract("TITLE")
+        let url = extract("URL")
         let text = extract("TEXT").trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty {
             results.append([
                 "window_index": wIdx - 1,
                 "tab_index": tIdx - 1,
                 "title": title,
+                "url": url,
                 "text": text,
             ])
         }
@@ -176,12 +177,16 @@ if CommandLine.arguments.contains("--all") {
         for (idx, win) in windows.enumerated() {
             let title = axValue(win, kAXTitleAttribute) as? String ?? ""
             var texts: [String] = []
+            var urls: [String] = []
 
             // For browsers, use AppleScript-sourced tab texts for matching window
             if let tabs = tabTexts {
                 // Find tabs belonging to this window
                 let windowTabs = tabs.filter { ($0["window_index"] as? Int) == idx }
                 for tab in windowTabs {
+                    if let url = tab["url"] as? String, !url.isEmpty {
+                        urls.append(url)
+                    }
                     if let text = tab["text"] as? String, !text.isEmpty {
                         let tabTitle = tab["title"] as? String ?? ""
                         if !tabTitle.isEmpty { texts.append("[\(tabTitle)]") }
@@ -202,14 +207,16 @@ if CommandLine.arguments.contains("--all") {
             } else if idx < appCGWindows.count {
                 windowID = appCGWindows[idx][kCGWindowNumber as String] as? Int ?? 0
             }
-            entries.append([
+            var entry: [String: Any] = [
                 "pid": Int(pid),
                 "window_index": idx,
                 "app": appName,
                 "title": title,
                 "texts": texts,
                 "window_id": windowID,
-            ])
+            ]
+            if !urls.isEmpty { entry["urls"] = urls }
+            entries.append(entry)
         }
     }
 

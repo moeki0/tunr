@@ -8,10 +8,9 @@ tunr captures your macOS screen and system audio, then delivers it to Claude Cod
 
 - **Screen recording** — Captures visible text and window titles from your macOS windows via the Accessibility API, with web page content from Chrome via AppleScript
 - **Audio recording** — Captures system audio via BlackHole virtual audio device and transcribes it locally with whisper.cpp
-- **TV channel** — Streams screen changes to Claude Code in real-time
-- **RADIO channel** — Streams audio transcriptions to Claude Code in real-time
+- **Channels** — Group windows into named channels. Assign windows manually, subscribe from Claude Code
 - **Search** — Claude Code can search your screen and audio history via MCP tools
-- **Privacy-first** — All data stays local. Per-window permission control. No data leaves your machine unless Claude Code reads it.
+- **Privacy-first** — All data stays local. Only windows you explicitly assign to a channel are captured. No data leaves your machine unless Claude Code reads it.
 
 ## Install
 
@@ -29,12 +28,20 @@ Grant these permissions to your terminal app (System Settings > Privacy & Securi
 
 To capture web page text from Chrome (not just tab titles), enable AppleScript JS execution:
 
-1. Open Chrome
-2. Menu bar: **View** > **Developer** > **Allow JavaScript from Apple Events**
+```bash
+defaults write com.google.Chrome AllowJavaScriptAppleEvents -bool true
+```
 
-This also works with other Chromium browsers (Edge, Brave, Vivaldi, Opera).
+This persists across Chrome restarts. To disable: `defaults delete com.google.Chrome AllowJavaScriptAppleEvents`
 
-> **Security note:** This setting allows any app with macOS Automation permission to execute JavaScript in your Chrome tabs via AppleScript. macOS TCC requires you to explicitly grant Automation access per-app, so only apps you approve can use this. However, if a malicious app gains Automation permission, it could read page content or manipulate DOM in any tab. If you're concerned, leave this setting off — tunr will still capture window titles and native app text via the Accessibility API.
+Other Chromium browsers work too:
+
+```bash
+defaults write com.microsoft.edgemac AllowJavaScriptAppleEvents -bool true
+defaults write com.brave.Browser AllowJavaScriptAppleEvents -bool true
+```
+
+> **Security note:** This allows any app with macOS Automation permission to execute JavaScript in your Chrome tabs via AppleScript. macOS TCC requires explicit per-app Automation access, so only apps you approve can use this. If you're concerned, leave this off — tunr will still capture window titles and native app text via the Accessibility API.
 
 ### MCP server setup
 
@@ -44,7 +51,7 @@ Register the MCP server with Claude Code:
 claude mcp add -s user tunr -- tunr mcp
 ```
 
-Start Claude Code with channels enabled (required for TV/RADIO real-time streaming):
+Start Claude Code with channels enabled (required for real-time streaming):
 
 ```bash
 claude --dangerously-load-development-channels server:tunr
@@ -80,41 +87,53 @@ brew install whisper-cpp
 
 ## Usage
 
-### Watch daemon
-
-Start the TUI daemon:
+### Start the daemon
 
 ```bash
-tunr watch
+tunr start
 ```
 
-This opens a terminal UI with two main sections:
+This opens a terminal UI with two panels:
 
-#### RECORDING
+#### SOURCES
 
-Records your screen and audio to a local SQLite database.
+Shows all detected windows. Each window starts unassigned (gray). Use **Enter** to assign a window to a channel — only assigned windows are captured and broadcast.
 
-- **SCREEN** — Shows all detected windows. New windows trigger a permission prompt. Allowed windows are periodically recorded (text). Content changes are deduplicated automatically.
-- **AUDIO** — Captures system audio in 10-second chunks and transcribes them locally with whisper.cpp. Shows the latest transcription.
+- Single channel: Enter toggles assignment directly
+- Multiple channels: Enter opens a channel picker
 
-#### BROADCAST
+#### FEED
 
-Streams recordings to Claude Code in real-time via MCP channel events.
-
-- **TV** — When enabled, screen content changes are pushed to Claude Code as they happen
-- **RADIO** — When enabled, audio transcriptions are pushed to Claude Code every ~10 seconds
+Shows captured screen and audio entries in reverse chronological order. Filter by type (`1` screen, `2` audio), channel (`3`-`9`), or search (`/`).
 
 ### TUI controls
 
 | Key | Action |
 |-----|--------|
-| `↑` `↓` | Navigate feed list |
-| `T` | Toggle selected feed (allow/deny) |
-| `Y` / `N` | Grant/deny new feed |
-| `A` | Toggle audio recording on/off |
-| `1` | Toggle TV channel on/off |
-| `2` | Toggle RADIO channel on/off |
+| `↑` `↓` | Navigate lists |
+| `Enter` | Assign channel (SOURCES) / View detail (FEED) |
+| `Tab` | Switch focus between SOURCES and FEED |
+| `S` | Open settings |
+| `C` | Calendar view |
+| `1` `2` | Toggle screen/audio filter |
+| `3`-`9` | Toggle channel filter |
+| `/` | Search captures |
 | `Q` | Quit |
+
+### Channels
+
+Channels are named groups of windows. Create channels in **Settings > Channels**, then assign windows to them in the SOURCES panel. Only windows assigned to a channel are captured and broadcast to Claude Code.
+
+- A window can belong to multiple channels
+- Claude Code subscribes to channels via `subscribe(channel)` to receive real-time updates
+- Unassigned windows are never captured
+
+#### Settings > Channels
+
+| Key | Action |
+|-----|--------|
+| `C` | Create channel |
+| `X` | Delete channel |
 
 ### Send (one-shot)
 
@@ -130,58 +149,49 @@ Bind this to a keyboard shortcut (e.g. via Raycast or macOS Shortcuts) for quick
 
 These tools are available to Claude Code when the MCP server is running:
 
+### Channel controls
+
+| Tool | Description |
+|------|-------------|
+| `list_channels()` | List available channels and subscription status |
+| `subscribe(channel)` | Subscribe to a channel for real-time notifications |
+| `unsubscribe(channel)` | Stop receiving from a channel |
+
 ### Screen tools
 
 | Tool | Description |
 |------|-------------|
-| `search_screen_history(query, app?, minutes?, limit?)` | Search screen text by keyword. Filter by app/window name with `app` parameter |
-| `recent_screens(app?, minutes?, limit?)` | Get recent screen states |
+| `search_screen_history(query, channel?, app?, minutes?, limit?)` | Search screen text (vector similarity + keyword fallback) |
+| `recent_screens(channel?, app?, minutes?, limit?)` | Get recent screen states |
 
 ### Audio tools
 
 | Tool | Description |
 |------|-------------|
-| `recent_audio(minutes?, limit?)` | Get recent audio transcriptions |
-| `search_audio(query, minutes?, limit?)` | Search audio transcriptions by keyword |
-
-### Channel controls
-
-| Tool | Description |
-|------|-------------|
-| `toggle_tv(enabled)` | Enable/disable real-time screen change notifications |
-| `toggle_radio(enabled)` | Enable/disable real-time audio transcription notifications |
-
-## Plugin
-
-tunr includes a Claude Code plugin that auto-invokes when you reference screen or audio content (e.g. "what was I just looking at", "what did they say in the video").
-
-```
-/install-plugin moeki0/tunr-skill
-```
+| `recent_audio(channel?, minutes?, limit?)` | Get recent audio transcriptions |
+| `search_audio(query, channel?, minutes?, limit?)` | Search audio transcriptions by keyword |
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  tunr watch (TUI)                  │
+│                  tunr start (TUI)                   │
 │                                                     │
-│  ┌─ RECORDING ────────────────────────────────────┐ │
-│  │                                                │ │
-│  │  SCREEN                     AUDIO              │ │
-│  │  ├ AX API polling           ├ BlackHole capture│ │
-│  │  ├ Per-window permissions   ├ whisper.cpp      │ │
-│  │  └ AppleScript (Chrome)     └ Transcriptions   │ │
-│  │           │                        │           │ │
-│  │           ▼                        ▼           │ │
-│  │        ┌──────────────────────────────┐        │ │
-│  │        │     SQLite (local DB)        │        │ │
-│  │        └──────────────────────────────┘        │ │
+│  ┌─ SOURCES ──────────────────────────────────────┐ │
+│  │  Window A  [work]        ← assigned, captured  │ │
+│  │  Window B  —             ← unassigned, ignored │ │
+│  │  Window C  [work,hobby]  ← multi-channel       │ │
+│  │  Audio     [work]        ← audio capture       │ │
 │  └────────────────────────────────────────────────┘ │
-│                                                     │
+│           │                        │                │
+│           ▼                        ▼                │
+│        ┌──────────────────────────────┐             │
+│        │     SQLite (local DB)        │             │
+│        └──────────────────────────────┘             │
+│           │                                         │
+│           ▼                                         │
 │  ┌─ BROADCAST ────────────────────────────────────┐ │
-│  │  TV  ●══▶ ┐                                    │ │
-│  │           ├──▶ channel events                  │ │
-│  │  RADIO ●══▶ ┘                                  │ │
+│  │  Subscribed channels → channel events          │ │
 │  └────────────────────────────────────────────────┘ │
 └──────────────────┬──────────────────────────────────┘
                    │
@@ -200,10 +210,10 @@ tunr send ──────────────────────▶ 
 
 | File | Description |
 |------|-------------|
-| `daemon.tsx` | TUI daemon (Ink/React). Polls windows, manages permissions, records to SQLite, manages audio capture |
+| `daemon.tsx` | TUI daemon (Ink/React). Polls windows, manual channel assignment, records to SQLite, manages audio capture |
 | `mcp-server.ts` | MCP server. Provides search/history tools and channel event polling |
-| `cli.ts` | CLI entry point (`watch`, `mcp`, `send`, `--version`) |
-| `ax_text.swift` | Accessibility API text extractor. `--all` returns all windows as JSON. Uses AppleScript JS for Chrome web content |
+| `cli.ts` | CLI entry point (`start`, `mcp`, `send`, `--version`) |
+| `ax_text.swift` | Accessibility API text extractor. `--all` returns all windows as JSON with URLs for browser tabs. Uses AppleScript JS for Chrome web content |
 | `send.swift` | One-shot screen capture. Writes channel event JSON |
 | `embed.swift` | NLEmbedding (macOS NaturalLanguage framework) for 512-dim sentence embeddings used in vector search |
 | `audio_capture.swift` | System audio capture via AVFoundation + BlackHole. Records WAV chunks at 16kHz mono |
@@ -213,7 +223,7 @@ tunr send ──────────────────────▶ 
 All data is stored locally at `~/Library/Application Support/tunr/`:
 
 - `tunr.db` — SQLite database with screen states and audio transcripts
-- `audio/` — Audio WAV chunks (auto-cleaned after 24h)
+- `settings.json` — Recording settings
 
 ## License
 

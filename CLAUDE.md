@@ -8,7 +8,7 @@ Screen context provider for Claude Code via MCP channels.
 bun install
 swiftc ax_text.swift -o tunr-ax-text -O
 swiftc send.swift -o tunr-send -O
-bun daemon.tsx    # start watch daemon with TUI
+bun daemon.tsx    # tunr start — TUI daemon
 ```
 
 ## Architecture
@@ -21,10 +21,10 @@ bun daemon.tsx    # start watch daemon with TUI
 
 ## Channels
 
-TUIでチャンネルを作成し、ウィンドウを割り当てる。Claude Codeは `subscribe(channel)` で購読。
+チャンネル = ウィンドウのグルーピング単位。TUIでチャンネルを作成し、SOURCESパネルでウィンドウを手動でチャンネルに割り当て。チャンネルに割り当て済み = キャプチャ＆ブロードキャスト、未割り当て = 何もしない。Claude Codeは `subscribe(channel)` で購読。
 
-- チャンネルにはウィンドウ群と音声(オプション)が含まれる
-- 1つのウィンドウが複数チャンネルに所属可能
+- ウィンドウごとにチャンネルを手動割り当て（Enter で切り替え）
+- 1つのウィンドウが複数チャンネルに割り当て可能
 - 購読中のチャンネルのみイベント通知が発生
 
 ## MCP Tools
@@ -45,8 +45,3 @@ TUIでチャンネルを作成し、ウィンドウを割り当てる。Claude C
 
 When the user references something they were looking at or listening to, or screen/audio context would help understand their request, proactively use these tools.
 
-## Dedup rules
-
-- navigation / app_switch: deduplicated by normalized app+title (session lifetime)
-- content_change: 10s cooldown, always passes dedup
-- user_send: always passes

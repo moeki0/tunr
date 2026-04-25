@@ -244,20 +244,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {
       const channels = db.prepare(
         `SELECT c.name, c.include_audio,
-                EXISTS(SELECT 1 FROM channel_subscriptions cs WHERE cs.channel_name = c.name) as subscribed,
-                COUNT(cw.id) as window_count
-         FROM channels c
-         LEFT JOIN channel_windows cw ON cw.channel_id = c.id
-         GROUP BY c.id ORDER BY c.id`
+                EXISTS(SELECT 1 FROM channel_subscriptions cs WHERE cs.channel_name = c.name) as subscribed
+         FROM channels c ORDER BY c.id`
       ).all() as any[];
 
       if (channels.length === 0) {
-        return { content: [{ type: "text" as const, text: "No channels configured. Create channels in the tunr TUI (tunr watch)." }] };
+        return { content: [{ type: "text" as const, text: "No channels configured. Create channels in the tunr TUI (tunr start)." }] };
       }
 
-      const lines = channels.map((ch) =>
-        `${ch.subscribed ? "●" : "○"} ${ch.name} [${ch.window_count} windows] [audio: ${ch.include_audio ? "on" : "off"}]${ch.subscribed ? " (subscribed)" : ""}`
-      );
+      const lines = channels.map((ch) => {
+        return `${ch.subscribed ? "●" : "○"} ${ch.name} [audio: ${ch.include_audio ? "on" : "off"}]${ch.subscribed ? " (subscribed)" : ""}`;
+      });
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } finally {
       db.close();

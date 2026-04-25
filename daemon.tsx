@@ -1,244 +1,176 @@
 #!/usr/bin/env bun
 /**
- * tunr watch daemon — TUI for channel-based window monitoring
+ * tunr start — Capture-first TUI daemon
  */
 
 import React, { useState, useEffect, useRef } from "react";
 import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import TextInput from "ink-text-input";
-import { Database } from "bun:sqlite";
 import { join } from "path";
-import { homedir } from "os";
 import { dirname } from "path";
+import { homedir } from "os";
 import { unlinkSync } from "fs";
 
-// --- DB setup ---
-const DATA_DIR = join(homedir(), "Library", "Application Support", "tunr");
-const DB_PATH = join(DATA_DIR, "tunr.db");
+import type { TrackedSource, Capture, DayCount } from "./lib/types";
+import type { View, SettingsTab, FocusArea } from "./lib/types";
+import { DATA_DIR, SETTINGS_PATH, AUDIO_DIR, AUDIO_SOURCE_KEY, POLL_MS, savedAudioChunkSec, savedSettings } from "./lib/constants";
+import { db, insertStmt, insertAudioStmt, localDateStr, getRecentCaptures, getDailyCounts, getHourlyCountsForDate, getCapturesForDate } from "./lib/db";
+import { getChannels, getActiveSubscriptions } from "./lib/rules";
+import { generateEmbedding, getAllWindows, windowKey } from "./lib/capture";
 
-await Bun.write(join(DATA_DIR, ".keep"), ""); // ensure dir exists
-
-// --- Settings ---
-const SETTINGS_PATH = join(DATA_DIR, "settings.json");
-let _savedSettings: any = {};
-try {
-  if (await Bun.file(SETTINGS_PATH).exists()) {
-    _savedSettings = JSON.parse(await Bun.file(SETTINGS_PATH).text());
-  }
-} catch {}
-const savedAudioChunkSec = typeof _savedSettings.audioChunkSec === "number" ? _savedSettings.audioChunkSec : 10;
-
-const db = new Database(DB_PATH);
-db.run("PRAGMA journal_mode=WAL");
-db.run(`CREATE TABLE IF NOT EXISTS screen_states (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  timestamp TEXT NOT NULL,
-  pid INTEGER NOT NULL,
-  window_index INTEGER NOT NULL,
-  app TEXT NOT NULL,
-  window_title TEXT NOT NULL,
-  texts TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now'))
-)`);
-db.run(`CREATE INDEX IF NOT EXISTS idx_screen_states_timestamp ON screen_states(timestamp)`);
-db.run(`CREATE INDEX IF NOT EXISTS idx_screen_states_app ON screen_states(app)`);
-
-// Add columns if missing
-try { db.run(`ALTER TABLE screen_states ADD COLUMN embedding BLOB`); } catch {}
-try { db.run(`ALTER TABLE screen_states ADD COLUMN screenshot_path TEXT`); } catch {}
-try { db.run(`ALTER TABLE screen_states ADD COLUMN channel_names TEXT`); } catch {}
-
-// Channel tables
-db.run(`CREATE TABLE IF NOT EXISTS channels (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
-  include_audio INTEGER DEFAULT 0
-)`);
-
-db.run(`CREATE TABLE IF NOT EXISTS channel_windows (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-  app TEXT NOT NULL,
-  title_pattern TEXT DEFAULT '%',
-  UNIQUE(channel_id, app, title_pattern)
-)`);
-
-db.run(`CREATE TABLE IF NOT EXISTS channel_subscriptions (
-  channel_name TEXT PRIMARY KEY,
-  subscribed_at TEXT DEFAULT (datetime('now'))
-)`);
-
-const AUDIO_DIR = join(DATA_DIR, "audio");
-await Bun.write(join(AUDIO_DIR, ".keep"), "");
-
-db.run(`CREATE TABLE IF NOT EXISTS audio_transcripts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  timestamp TEXT NOT NULL,
-  audio_path TEXT NOT NULL,
-  transcript TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now'))
-)`);
-db.run(`CREATE INDEX IF NOT EXISTS idx_audio_timestamp ON audio_transcripts(timestamp)`);
-
-const insertAudioStmt = db.prepare(
-  `INSERT INTO audio_transcripts (timestamp, audio_path, transcript) VALUES (?, ?, ?)`
-);
-
-const insertStmt = db.prepare(
-  `INSERT INTO screen_states (timestamp, pid, window_index, app, window_title, texts, embedding, screenshot_path, channel_names) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-);
-
-// --- Channel DB helpers ---
-function getChannels(): { id: number; name: string; include_audio: number }[] {
-  return db.prepare(`SELECT id, name, include_audio FROM channels ORDER BY id`).all() as any[];
-}
-
-function getChannelWindowAssignments(): { channel_id: number; channel_name: string; app: string; title_pattern: string }[] {
-  return db.prepare(
-    `SELECT cw.channel_id, c.name as channel_name, cw.app, cw.title_pattern
-     FROM channel_windows cw JOIN channels c ON c.id = cw.channel_id`
-  ).all() as any[];
-}
-
-function getActiveSubscriptions(): string[] {
-  return (db.prepare(`SELECT channel_name FROM channel_subscriptions`).all() as any[]).map(r => r.channel_name);
-}
-
-function matchChannelsForWindow(app: string, title: string, assignments: { channel_name: string; app: string; title_pattern: string }[]): string[] {
-  const matched = new Set<string>();
-  for (const a of assignments) {
-    if (a.app === app) {
-      if (a.title_pattern === "%" || title.includes(a.title_pattern.replace(/%/g, ""))) {
-        matched.add(a.channel_name);
-      }
-    }
-  }
-  return [...matched];
-}
-
-// --- AX text helper ---
-const AX_TEXT_PATH = join(dirname(process.execPath), "tunr-ax-text");
-const AX_TEXT_FALLBACK = join(import.meta.dir, "tunr-ax-text");
-const axTextBin = await Bun.file(AX_TEXT_PATH).exists() ? AX_TEXT_PATH : AX_TEXT_FALLBACK;
-
-const EMBED_PATH = join(dirname(process.execPath), "tunr-embed");
-const EMBED_FALLBACK = join(import.meta.dir, "tunr-embed");
-const embedBin = await Bun.file(EMBED_PATH).exists() ? EMBED_PATH : EMBED_FALLBACK;
-
-function generateEmbedding(text: string): Buffer | null {
-  try {
-    const proc = Bun.spawnSync([embedBin], {
-      stdin: new TextEncoder().encode(text),
-      stderr: "pipe",
-    });
-    if (proc.exitCode !== 0) return null;
-    const vec: number[] = JSON.parse(proc.stdout.toString().trim());
-    const buf = Buffer.alloc(vec.length * 8);
-    for (let i = 0; i < vec.length; i++) buf.writeDoubleBE(vec[i], i * 8);
-    return buf;
-  } catch {
-    return null;
-  }
-}
-
-interface WindowInfo {
-  pid: number;
-  window_index: number;
-  app: string;
-  title: string;
-  texts: string[];
-  window_id: number;
-}
-
-async function getAllWindows(): Promise<WindowInfo[]> {
-  try {
-    const proc = Bun.spawnSync([axTextBin, "--all"], { stderr: "pipe" });
-    if (proc.exitCode !== 0) return [];
-    const out = proc.stdout.toString().trim();
-    if (!out) return [];
-    return JSON.parse(out);
-  } catch {
-    return [];
-  }
-}
-
-function windowKey(w: { pid: number; window_index: number }): string {
-  return `${w.pid}:${w.window_index}`;
-}
-
-interface TrackedWindow {
-  pid: number;
-  window_index: number;
-  app: string;
-  title: string;
-  channels: string[]; // assigned channel names
-  lastSeen: number;
-}
-
-const POLL_MS = 3000;
-
-// --- React TUI ---
-type Panel = "channels" | "windows";
-type InputMode = "normal" | "create_channel";
+// ===== TUI =====
 
 function App() {
   const { exit } = useApp();
-  const [windows, setWindows] = useState<Map<string, TrackedWindow>>(new Map());
-  const windowsRef = useRef<Map<string, TrackedWindow>>(new Map());
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
-  const [recordCount, setRecordCount] = useState(0);
-  const [audioSize, setAudioSize] = useState("0 MB");
-  const [screenIntervalSec, setScreenIntervalSec] = useState(typeof _savedSettings.screenIntervalSec === "number" ? _savedSettings.screenIntervalSec : 5);
-  const screenIntervalRef = useRef(typeof _savedSettings.screenIntervalSec === "number" ? _savedSettings.screenIntervalSec : 5);
-  const [broadcastCount, setBroadcastCount] = useState(0);
+  const { stdout } = useStdout();
+  const rows = stdout?.rows ?? 24;
+  const cols = stdout?.columns ?? 80;
 
-  // Channel state
+  // --- State ---
+  const [view, setView] = useState<View>("feed");
+  const [windows, setWindows] = useState<Map<string, TrackedSource>>(new Map());
+  const windowsRef = useRef<Map<string, TrackedSource>>(new Map());
+  const [recordCount, setRecordCount] = useState(0);
+  const [broadcastCount, setBroadcastCount] = useState(0);
+  const [screenIntervalSec, setScreenIntervalSec] = useState(
+    typeof savedSettings.screenIntervalSec === "number" ? savedSettings.screenIntervalSec : 5
+  );
+  const screenIntervalRef = useRef(screenIntervalSec);
+
+  // Audio
+  const [audioStatus, setAudioStatus] = useState("starting");
+  const [lastTranscript, setLastTranscript] = useState("");
+  const [audioChunkSec, setAudioChunkSec] = useState(savedAudioChunkSec);
+  const audioChunkRef = useRef(savedAudioChunkSec);
+  const audioProcRef = useRef<any>(null);
+  const [audioBroadcastCount, setAudioBroadcastCount] = useState(0);
+
+  // Audio enabled is derived from the audio source having channels assigned
+  const audioSource = windows.get(AUDIO_SOURCE_KEY);
+  const audioEnabled = (audioSource?.channels.length ?? 0) > 0;
+  const audioEnabledRef = useRef(false);
+
+  // Initialize audio virtual source on mount
+  useEffect(() => {
+    setWindows((prev) => {
+      if (prev.has(AUDIO_SOURCE_KEY)) return prev;
+      const next = new Map(prev);
+      next.set(AUDIO_SOURCE_KEY, {
+        pid: 0, window_index: 0,
+        app: "Audio", title: "System Audio",
+        urls: [],
+        channels: [],
+        lastSeen: Date.now(),
+        virtual: true,
+      });
+      return next;
+    });
+  }, []);
+
+  // Channels (each channel has its own rules)
   const [channels, setChannels] = useState(getChannels());
-  const [activePanel, setActivePanel] = useState<Panel>("channels");
-  const [channelIndex, setChannelIndex] = useState(0);
-  const [windowIndex, setWindowIndex] = useState(0);
-  const [inputMode, setInputMode] = useState<InputMode>("normal");
-  const [newChannelName, setNewChannelName] = useState("");
   const [subscriptions, setSubscriptions] = useState<string[]>(getActiveSubscriptions());
 
-  // Refresh channels from DB periodically
+  // Feed state
+  const [focusArea, setFocusArea] = useState<FocusArea>("feed");
+  const [feedIndex, setFeedIndex] = useState(0);
+  const [feedScroll, setFeedScroll] = useState(0);
+  const [typeFilter, setTypeFilter] = useState<string[]>([]);
+  const [channelFilter, setChannelFilter] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const [searchMode, setSearchMode] = useState(false);
+  const [captures, setCaptures] = useState<Capture[]>([]);
+
+  // Settings state
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  const [settingsIndex, setSettingsIndex] = useState(0);
+  const [channelCreateMode, setChannelCreateMode] = useState(false);
+  const [newChannelName, setNewChannelName] = useState("");
+
+  // Sources panel state
+  const [sourcesIndex, setSourcesIndex] = useState(0);
+  const [channelPickerOpen, setChannelPickerOpen] = useState(false);
+  const [channelPickerIndex, setChannelPickerIndex] = useState(0);
+
+  // Calendar state
+  const [calDays, setCalDays] = useState<DayCount[]>([]);
+  const [calCursorX, setCalCursorX] = useState(0); // week
+  const [calCursorY, setCalCursorY] = useState(0); // day of week (0=Sun)
+  const [calSelectedDate, setCalSelectedDate] = useState<string | null>(null);
+  const [calCaptures, setCalCaptures] = useState<Capture[]>([]);
+  const [calFeedIndex, setCalFeedIndex] = useState(0);
+  const [calFeedScroll, setCalFeedScroll] = useState(0);
+  const [calHourly, setCalHourly] = useState<{ hour: number; count: number }[]>([]);
+
+  // Detail state
+  const [detailCapture, setDetailCapture] = useState<Capture | null>(null);
+
+  // Delete confirm
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+
+  // Clock
+  const [now, setNow] = useState(new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const recBlink = now.getSeconds() % 2 === 0;
+
+  // Sync refs
+  useEffect(() => { windowsRef.current = windows; }, [windows]);
+  useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
+
+  // Keep audio source's lastSeen fresh so it doesn't get cleaned up
+  useEffect(() => {
+    const iv = setInterval(() => {
+      setWindows((prev) => {
+        const src = prev.get(AUDIO_SOURCE_KEY);
+        if (!src) return prev;
+        const next = new Map(prev);
+        next.set(AUDIO_SOURCE_KEY, { ...src, lastSeen: Date.now() });
+        return next;
+      });
+    }, 5000);
+    return () => clearInterval(iv);
+  }, []);
+  useEffect(() => {
+    audioChunkRef.current = audioChunkSec;
+    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec }, null, 2));
+  }, [audioChunkSec]);
+  useEffect(() => {
+    screenIntervalRef.current = screenIntervalSec;
+    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec }, null, 2));
+  }, [screenIntervalSec]);
+
+  // Refresh channels + subscriptions + captures periodically
   useEffect(() => {
     const iv = setInterval(() => {
       setChannels(getChannels());
       setSubscriptions(getActiveSubscriptions());
+      const audioSrc = windowsRef.current.get(AUDIO_SOURCE_KEY);
+      const audioChans = audioSrc?.channels ?? [];
+      setCaptures(getRecentCaptures(500, typeFilter, channelFilter, searchQuery, 0, audioChans));
     }, 2000);
     return () => clearInterval(iv);
-  }, []);
+  }, [typeFilter, channelFilter, searchQuery]);
 
-  // Update storage sizes every 10s
+  // Initial capture load
   useEffect(() => {
-    function updateSizes() {
-      try {
-        const audioStat = Bun.spawnSync(["du", "-sh", AUDIO_DIR], { stdout: "pipe" });
-        const audioOut = audioStat.stdout.toString().trim().split("\t")[0] || "0";
-        setAudioSize(audioOut);
-      } catch {}
-    }
-    updateSizes();
-    const iv = setInterval(updateSizes, 10000);
-    return () => clearInterval(iv);
-  }, []);
+    const audioSrc = windowsRef.current.get(AUDIO_SOURCE_KEY);
+    const audioChans = audioSrc?.channels ?? [];
+    setCaptures(getRecentCaptures(500, typeFilter, channelFilter, searchQuery, 0, audioChans));
+    setFeedIndex(0);
+    setFeedScroll(0);
+  }, [typeFilter, channelFilter, searchQuery]);
 
-  // Audio state
-  const [audioLog, setAudioLog] = useState<string[]>([]);
-  const addAudioLog = (entry: string) => setAudioLog((prev) => [entry, ...prev].slice(0, 5));
-  const [audioBroadcastCount, setAudioBroadcastCount] = useState(0);
-
-  useEffect(() => { windowsRef.current = windows; }, [windows]);
-
-  // Poll for windows
+  // --- Window polling ---
   useEffect(() => {
     let active = true;
     async function poll() {
       while (active) {
         const found = await getAllWindows();
         const now = Date.now();
-        const assignments = getChannelWindowAssignments();
 
         setWindows((prev) => {
           const next = new Map(prev);
@@ -248,27 +180,21 @@ function App() {
             const key = windowKey(w);
             seenKeys.add(key);
             const existing = next.get(key);
-            const chans = matchChannelsForWindow(w.app, w.title, assignments);
+            const urls = w.urls ?? [];
             if (existing) {
-              next.set(key, { ...existing, title: w.title, channels: chans, lastSeen: now });
+              next.set(key, { ...existing, title: w.title, urls, lastSeen: now });
             } else {
               next.set(key, {
-                pid: w.pid,
-                window_index: w.window_index,
-                app: w.app,
-                title: w.title,
-                channels: chans,
-                lastSeen: now,
+                pid: w.pid, window_index: w.window_index,
+                app: w.app, title: w.title, urls,
+                channels: [], lastSeen: now,
               });
             }
           }
 
           for (const [key, tw] of next) {
-            if (!seenKeys.has(key) && now - tw.lastSeen > 10000) {
-              next.delete(key);
-            }
+            if (!seenKeys.has(key) && now - tw.lastSeen > 10000) next.delete(key);
           }
-
           return next;
         });
 
@@ -279,7 +205,7 @@ function App() {
     return () => { active = false; };
   }, []);
 
-  // Record windows + broadcast to subscribed channels
+  // --- Recording ---
   useEffect(() => {
     let active = true;
     const lastTexts = new Map<string, string>();
@@ -317,28 +243,31 @@ function App() {
         const found = await getAllWindows();
         const foundMap = new Map(found.map((w) => [windowKey(w), w]));
         const ts = new Date().toISOString();
-        const assignments = getChannelWindowAssignments();
+        const chList = getChannels();
         const subs = getActiveSubscriptions();
+        const currentWindows = windowsRef.current;
 
-        // Collect per-channel changed entries
         const perChannel = new Map<string, { app: string; title: string; texts: string[] }[]>();
 
         for (const [, w] of foundMap) {
           if (!w.texts || w.texts.length === 0) continue;
           const key = windowKey(w);
 
+          // Only record windows assigned to channels
+          const tw = currentWindows.get(key);
+          if (!tw || tw.channels.length === 0) continue;
+
           const textsJson = JSON.stringify(w.texts);
           if (lastTexts.get(key) === textsJson) continue;
           lastTexts.set(key, textsJson);
 
-          const chans = matchChannelsForWindow(w.app, w.title, assignments);
+          const chans = tw.channels;
           const channelNamesJson = JSON.stringify(chans);
 
           const embedding = generateEmbedding(w.texts.join("\n"));
           insertStmt.run(ts, w.pid, w.window_index, w.app, w.title, textsJson, embedding, null, channelNamesJson);
           setRecordCount((c) => c + 1);
 
-          // Group by subscribed channel for broadcast
           for (const ch of chans) {
             if (subs.includes(ch)) {
               if (!perChannel.has(ch)) perChannel.set(ch, []);
@@ -347,7 +276,6 @@ function App() {
           }
         }
 
-        // Write per-channel event files
         for (const [ch, entries] of perChannel) {
           const eventPath = join(DATA_DIR, `channel_event_${ch}.json`);
           await Bun.write(eventPath, JSON.stringify({ timestamp: ts, channel: ch, entries }));
@@ -359,25 +287,7 @@ function App() {
     return () => { active = false; };
   }, []);
 
-  // Audio capture & transcription
-  const [audioEnabled, setAudioEnabled] = useState(true);
-  const audioEnabledRef = useRef(true);
-  const [audioStatus, setAudioStatus] = useState<string>("starting");
-  const [lastTranscript, setLastTranscript] = useState<string>("");
-  const [audioChunkSec, setAudioChunkSec] = useState(savedAudioChunkSec);
-  const audioChunkRef = useRef(savedAudioChunkSec);
-  const audioProcRef = useRef<any>(null);
-
-  useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
-  useEffect(() => {
-    audioChunkRef.current = audioChunkSec;
-    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec }));
-  }, [audioChunkSec]);
-  useEffect(() => {
-    screenIntervalRef.current = screenIntervalSec;
-    Bun.write(SETTINGS_PATH, JSON.stringify({ audioChunkSec, screenIntervalSec }));
-  }, [screenIntervalSec]);
-
+  // --- Audio ---
   useEffect(() => {
     let active = true;
     const AUDIO_CAPTURE_PATH = join(dirname(process.execPath), "tunr-audio-capture");
@@ -385,35 +295,18 @@ function App() {
 
     async function startAudio() {
       const audioBin = await Bun.file(AUDIO_CAPTURE_PATH).exists() ? AUDIO_CAPTURE_PATH : AUDIO_CAPTURE_FALLBACK;
-      if (!await Bun.file(audioBin).exists()) {
-        setAudioStatus("no binary");
-        return;
-      }
+      if (!await Bun.file(audioBin).exists()) { setAudioStatus("no binary"); return; }
 
       const whisperCheck = Bun.spawnSync(["which", "whisper-cli"], { stdout: "pipe", stderr: "pipe" });
-      if (whisperCheck.exitCode !== 0) {
-        setAudioStatus("disabled — whisper-cpp not installed");
-        setAudioEnabled(false);
-        return;
-      }
+      if (whisperCheck.exitCode !== 0) { setAudioStatus("no whisper"); return; }
       const modelPath = join(homedir(), ".cache", "whisper-cpp-small.bin");
-      if (!await Bun.file(modelPath).exists()) {
-        setAudioStatus("disabled — model not found");
-        setAudioEnabled(false);
-        return;
-      }
+      if (!await Bun.file(modelPath).exists()) { setAudioStatus("no model"); return; }
 
       while (active) {
-        if (!audioEnabledRef.current) {
-          setAudioStatus("off");
-          await Bun.sleep(1000);
-          continue;
-        }
+        if (!audioEnabledRef.current) { setAudioStatus("off"); await Bun.sleep(1000); continue; }
 
         setAudioStatus("recording");
-        const proc = Bun.spawn([audioBin, AUDIO_DIR, String(audioChunkRef.current)], {
-          stdout: "pipe", stderr: "pipe",
-        });
+        const proc = Bun.spawn([audioBin, AUDIO_DIR, String(audioChunkRef.current)], { stdout: "pipe", stderr: "pipe" });
         audioProcRef.current = proc;
 
         const reader = proc.stdout.getReader();
@@ -436,325 +329,718 @@ function App() {
                 "whisper-cli", "-m", mp, "-l", "ja", "-f", chunk.file, "-np", "-nt",
               ], { stdout: "pipe", stderr: "pipe" });
               const transcript = wp.stdout.toString().trim();
+              try { unlinkSync(chunk.file); } catch {}
               if (transcript) {
                 insertAudioStmt.run(chunk.timestamp, chunk.file, transcript);
                 setLastTranscript(transcript.slice(0, 80));
-                addAudioLog(`${chunk.timestamp.slice(11, 19)} ${transcript.slice(0, 40)}`);
-                // Write audio event for channels that include audio and are subscribed
                 const subs = getActiveSubscriptions();
-                const audioChannels = getChannels().filter(c => c.include_audio && subs.includes(c.name));
-                for (const ch of audioChannels) {
-                  const audioEventPath = join(DATA_DIR, `channel_audio_${ch.name}.json`);
-                  await Bun.write(audioEventPath, JSON.stringify({
-                    timestamp: chunk.timestamp,
-                    channel: ch.name,
-                    transcript,
-                  }));
+                const audioSrc = windowsRef.current.get(AUDIO_SOURCE_KEY);
+                const audioChans = audioSrc?.channels ?? [];
+                const subbedAudioChans = audioChans.filter(ch => subs.includes(ch));
+                for (const chName of subbedAudioChans) {
+                  const audioEventPath = join(DATA_DIR, `channel_audio_${chName}.json`);
+                  await Bun.write(audioEventPath, JSON.stringify({ timestamp: chunk.timestamp, channel: chName, transcript }));
                   setAudioBroadcastCount((c) => c + 1);
                 }
               }
             } catch {}
           }
         }
-
         proc.kill();
         audioProcRef.current = null;
       }
     }
-
     startAudio();
 
-    async function cleanupAudio() {
-      while (active) {
-        await Bun.sleep(600_000);
-        const cutoff = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
-        const old = db.prepare(
-          `SELECT id, audio_path FROM audio_transcripts WHERE timestamp < ?`
-        ).all(cutoff) as any[];
-        for (const row of old) {
-          try { unlinkSync(row.audio_path); } catch {}
-        }
-        db.run(`DELETE FROM audio_transcripts WHERE timestamp < ?`, cutoff);
-      }
-    }
-    cleanupAudio();
-
+    // Audio files are deleted immediately after transcription; no periodic cleanup needed.
     return () => { active = false; };
   }, []);
 
-  // Handle input
-  const allWindows = [...windows.values()];
+  // --- Derived data ---
+  const allSources = [...windows.values()];
+  const assignedCount = allSources.filter(w => w.channels.length > 0).length;
 
+  // Toggle channel assignment for a window
+  const toggleChannel = (wKey: string, chName: string) => {
+    setWindows((prev) => {
+      const next = new Map(prev);
+      const w = next.get(wKey);
+      if (!w) return prev;
+      const has = w.channels.includes(chName);
+      next.set(wKey, { ...w, channels: has ? w.channels.filter(c => c !== chName) : [...w.channels, chName] });
+      return next;
+    });
+  };
+
+  // --- Input handling ---
   useInput((input, key) => {
-    if (inputMode === "create_channel") return; // TextInput handles input
+    // Search mode: TextInput handles everything
+    if (searchMode) return;
+    // Channel create mode
+    if (channelCreateMode) return;
+    // Channel picker mode
+    if (channelPickerOpen) {
+      const chList = getChannels();
+      if (key.escape) { setChannelPickerOpen(false); return; }
+      if (key.upArrow) { setChannelPickerIndex(p => Math.max(0, p - 1)); return; }
+      if (key.downArrow) { setChannelPickerIndex(p => Math.min(chList.length - 1, p + 1)); return; }
+      if (key.return && channelPickerIndex < chList.length) {
+        const w = allSources[sourcesIndex];
+        if (w) {
+          const wKey = w.virtual ? AUDIO_SOURCE_KEY : windowKey(w);
+          toggleChannel(wKey, chList[channelPickerIndex].name);
+        }
+        setChannelPickerOpen(false);
+      }
+      return;
+    }
 
+    // Global: quit
     if (input === "q" || (key.ctrl && input === "c")) {
       if (audioProcRef.current) audioProcRef.current.kill();
       db.close();
       process.exit(0);
     }
 
-    // Panel switching
-    if (key.tab) {
-      setActivePanel((p) => p === "channels" ? "windows" : "channels");
-      return;
-    }
-
-    // Audio toggle
-    if (input === "a" || input === "A") {
-      setAudioEnabled((prev) => !prev);
-      return;
-    }
-
-    // Interval
-    if (input === "[") { setScreenIntervalSec((p: number) => Math.max(3, p - 1)); return; }
-    if (input === "]") { setScreenIntervalSec((p: number) => Math.min(30, p + 1)); return; }
-
-    // Delete all data
-    if (input === "d" || input === "D") {
-      if (deleteConfirm) {
-        db.run("DELETE FROM screen_states");
-        db.run("DELETE FROM audio_transcripts");
-        try { Bun.spawnSync(["find", AUDIO_DIR, "-name", "*.wav", "-delete"], { stdout: "pipe", stderr: "pipe" }); } catch {}
-        setRecordCount(0);
-        setBroadcastCount(0);
-        setAudioBroadcastCount(0);
-        setAudioSize("0B");
-        setDeleteConfirm(false);
-      } else {
-        setDeleteConfirm(true);
-        setTimeout(() => setDeleteConfirm(false), 3000);
-      }
-      return;
-    }
-    setDeleteConfirm(false);
-
-    if (activePanel === "channels") {
-      if (key.upArrow) { setChannelIndex((p) => Math.max(0, p - 1)); return; }
-      if (key.downArrow) { setChannelIndex((p) => Math.min(channels.length - 1, p + 1)); return; }
-
-      // Create channel
-      if (input === "c" || input === "C") {
-        setInputMode("create_channel");
-        setNewChannelName("");
+    // View switching
+    if (view === "detail") {
+      if (key.escape || input === "q") {
+        setView(calSelectedDate ? "calendar" : "feed");
         return;
       }
+      return;
+    }
 
-      // Delete channel
-      if (input === "x" || input === "X") {
-        if (channelIndex >= 0 && channelIndex < channels.length) {
-          db.run(`DELETE FROM channels WHERE id = ?`, channels[channelIndex].id);
-          setChannels(getChannels());
-          setChannelIndex((p) => Math.min(p, channels.length - 2));
+    if (view === "calendar") {
+      if (key.escape) {
+        if (calSelectedDate) {
+          setCalSelectedDate(null);
+          setCalCaptures([]);
+          setCalFeedIndex(0);
+          setCalFeedScroll(0);
+        } else {
+          setView("feed");
         }
         return;
       }
 
-      // Toggle audio for channel
-      if (input === "a" || input === "A") {
-        // 'a' in channels panel toggles channel audio, not global audio
-        return; // handled above already for global audio
-      }
-      if (input === "o" || input === "O") {
-        if (channelIndex >= 0 && channelIndex < channels.length) {
-          const ch = channels[channelIndex];
-          db.run(`UPDATE channels SET include_audio = ? WHERE id = ?`, ch.include_audio ? 0 : 1, ch.id);
-          setChannels(getChannels());
-        }
-        return;
-      }
-    }
-
-    if (activePanel === "windows") {
-      if (key.upArrow) { setWindowIndex((p) => Math.max(0, p - 1)); return; }
-      if (key.downArrow) { setWindowIndex((p) => Math.min(allWindows.length - 1, p + 1)); return; }
-
-      // Assign window to channel by number key (1-9)
-      const num = parseInt(input);
-      if (num >= 1 && num <= 9 && windowIndex >= 0 && windowIndex < allWindows.length) {
-        const chIdx = num - 1;
-        if (chIdx < channels.length) {
-          const w = allWindows[windowIndex];
-          const ch = channels[chIdx];
-          try {
-            db.run(
-              `INSERT OR IGNORE INTO channel_windows (channel_id, app, title_pattern) VALUES (?, ?, '%')`,
-              ch.id, w.app
-            );
-          } catch {}
-          // Refresh window channels
-          const assignments = getChannelWindowAssignments();
-          setWindows((prev) => {
-            const next = new Map(prev);
-            for (const [k, tw] of next) {
-              next.set(k, { ...tw, channels: matchChannelsForWindow(tw.app, tw.title, assignments) });
-            }
+      if (calSelectedDate) {
+        // Browsing a day's captures
+        const calFeedH = Math.max(4, rows - 14);
+        if (key.upArrow) {
+          setCalFeedIndex(p => {
+            const next = Math.max(0, p - 1);
+            setCalFeedScroll(s => next < s ? next : s);
             return next;
           });
+          return;
+        }
+        if (key.downArrow) {
+          setCalFeedIndex(p => {
+            const next = Math.min(calCaptures.length - 1, p + 1);
+            setCalFeedScroll(s => next >= s + calFeedH ? next - calFeedH + 1 : s);
+            return next;
+          });
+          return;
+        }
+        if (key.return && calFeedIndex < calCaptures.length) {
+          setDetailCapture(calCaptures[calFeedIndex]);
+          setView("detail");
+          return;
         }
         return;
       }
 
-      // Remove window from selected channel (0 key)
-      if (input === "0" && windowIndex >= 0 && windowIndex < allWindows.length && channelIndex >= 0 && channelIndex < channels.length) {
-        const w = allWindows[windowIndex];
-        const ch = channels[channelIndex];
-        db.run(`DELETE FROM channel_windows WHERE channel_id = ? AND app = ?`, ch.id, w.app);
-        const assignments = getChannelWindowAssignments();
-        setWindows((prev) => {
-          const next = new Map(prev);
-          for (const [k, tw] of next) {
-            next.set(k, { ...tw, channels: matchChannelsForWindow(tw.app, tw.title, assignments) });
+      // Navigating the heatmap grid
+      const weeks = Math.max(1, Math.ceil(calDays.length / 7));
+      if (key.leftArrow) { setCalCursorX(p => Math.max(0, p - 1)); return; }
+      if (key.rightArrow) { setCalCursorX(p => Math.min(weeks - 1, p + 1)); return; }
+      if (key.upArrow) { setCalCursorY(p => Math.max(0, p - 1)); return; }
+      if (key.downArrow) { setCalCursorY(p => Math.min(6, p + 1)); return; }
+      if (key.return) {
+        const idx = calCursorX * 7 + calCursorY;
+        if (idx < calDays.length) {
+          const date = calDays[idx].date;
+          setCalSelectedDate(date);
+          setCalCaptures(getCapturesForDate(date));
+          setCalHourly(getHourlyCountsForDate(date));
+          setCalFeedIndex(0);
+          setCalFeedScroll(0);
+        }
+        return;
+      }
+      return;
+    }
+
+    if (view === "settings") {
+      if (key.escape) { setView("feed"); return; }
+
+      // Tab switching in settings
+      if (key.tab) {
+        const tabs: SettingsTab[] = ["general", "channels"];
+        const idx = tabs.indexOf(settingsTab);
+        setSettingsTab(tabs[(idx + 1) % tabs.length]);
+        setSettingsIndex(0);
+        return;
+      }
+
+      if (key.upArrow) { setSettingsIndex(p => Math.max(0, p - 1)); return; }
+      if (key.downArrow) { setSettingsIndex(p => p + 1); return; }
+
+      if (settingsTab === "general") {
+        if (settingsIndex === 0 && (input === "[" || input === "]")) {
+          setScreenIntervalSec(p => input === "[" ? Math.max(3, p - 1) : Math.min(30, p + 1));
+          return;
+        }
+        if (settingsIndex === 1 && (input === "[" || input === "]")) {
+          setAudioChunkSec(p => input === "[" ? Math.max(5, p - 1) : Math.min(60, p + 1));
+          return;
+        }
+        if (settingsIndex === 2 && key.return) {
+          if (deleteConfirm) {
+            db.run("DELETE FROM screen_states");
+            db.run("DELETE FROM audio_transcripts");
+            try { Bun.spawnSync(["find", AUDIO_DIR, "-name", "*.wav", "-delete"], { stdout: "pipe", stderr: "pipe" }); } catch {}
+            setRecordCount(0); setBroadcastCount(0); setAudioBroadcastCount(0);
+            setDeleteConfirm(false);
+          } else {
+            setDeleteConfirm(true);
+            setTimeout(() => setDeleteConfirm(false), 3000);
           }
+          return;
+        }
+      }
+
+      if (settingsTab === "channels") {
+        const chList = getChannels();
+        if (input === "c" || input === "C") { setChannelCreateMode(true); setNewChannelName(""); return; }
+        if ((input === "x" || input === "X") && settingsIndex < chList.length) {
+          db.run(`DELETE FROM channels WHERE id = ?`, chList[settingsIndex].id);
+          setChannels(getChannels());
+          return;
+        }
+      }
+      return;
+    }
+
+    // === Feed view ===
+
+    // Settings
+    if (input === "s" || input === "S") { setView("settings"); setSettingsIndex(0); return; }
+
+    // Calendar
+    if (input === "c" || input === "C") {
+      const days = getDailyCounts(16);
+      setCalDays(days);
+      // Position cursor on today
+      const todayStr = localDateStr(new Date());
+      const todayIdx = days.findIndex(d => d.date === todayStr);
+      if (todayIdx >= 0) { setCalCursorX(Math.floor(todayIdx / 7)); setCalCursorY(todayIdx % 7); }
+      setCalSelectedDate(null);
+      setView("calendar");
+      return;
+    }
+
+    // Search
+    if (input === "/") { setSearchMode(true); return; }
+
+    // Toggle type filter
+    if (input === "1") {
+      setTypeFilter(p => p.includes("screen") ? p.filter(t => t !== "screen") : [...p, "screen"]);
+      return;
+    }
+    if (input === "2") {
+      setTypeFilter(p => p.includes("audio") ? p.filter(t => t !== "audio") : [...p, "audio"]);
+      return;
+    }
+
+    // Toggle channel filter (3-9 mapped to channels)
+    if (input >= "3" && input <= "9") {
+      const chIdx = parseInt(input) - 3;
+      const chList = getChannels();
+      if (chIdx < chList.length) {
+        const chName = chList[chIdx].name;
+        setChannelFilter(p => p.includes(chName) ? p.filter(c => c !== chName) : [...p, chName]);
+      }
+      return;
+    }
+
+    // Focus area switching
+    if (key.tab) {
+      if (allSources.length > 0) {
+        setFocusArea(p => p === "feed" ? "sources" : "feed");
+      }
+      return;
+    }
+
+    if (focusArea === "sources") {
+      if (key.upArrow) { setSourcesIndex(p => Math.max(0, p - 1)); return; }
+      if (key.downArrow) { setSourcesIndex(p => Math.min(allSources.length - 1, p + 1)); return; }
+      if (key.return) {
+        if (sourcesIndex < allSources.length) {
+          const chList = getChannels();
+          if (chList.length === 0) return;
+          if (chList.length === 1) {
+            // Single channel: toggle directly
+            const w = allSources[sourcesIndex];
+            const wKey = w.virtual ? AUDIO_SOURCE_KEY : windowKey(w);
+            toggleChannel(wKey, chList[0].name);
+          } else {
+            // Multiple channels: open picker
+            setChannelPickerOpen(true);
+            setChannelPickerIndex(0);
+          }
+        }
+        return;
+      }
+    }
+
+    if (focusArea === "feed") {
+      if (key.upArrow) {
+        setFeedIndex(p => {
+          const next = Math.max(0, p - 1);
+          setFeedScroll(s => next < s ? next : s);
           return next;
         });
+        return;
+      }
+      if (key.downArrow) {
+        setFeedIndex(p => {
+          const next = Math.min(captures.length - 1, p + 1);
+          setFeedScroll(s => next >= s + feedHeight ? next - feedHeight + 1 : s);
+          return next;
+        });
+        return;
+      }
+      if (key.return && feedIndex < captures.length) {
+        setDetailCapture(captures[feedIndex]);
+        setView("detail");
         return;
       }
     }
   });
 
-  // Terminal size
-  const { stdout } = useStdout();
-  const rows = stdout?.rows ?? 24;
+  // ===== Render =====
 
-  // Clock
-  const [now, setNow] = useState(new Date());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  const clock = now.toLocaleTimeString("ja-JP", { hour12: false });
-  const dateStr = now.toLocaleDateString("ja-JP");
-  const recBlink = now.getSeconds() % 2 === 0;
+  // --- Header ---
+  const Header = () => (
+    <Box paddingX={1} justifyContent="space-between">
+      <Box gap={2}>
+        <Text bold color="magenta">tunr</Text>
+        <Text color={recBlink ? "red" : "gray"}>
+          {recBlink ? "●" : "○"} REC {recordCount}
+        </Text>
+        <Text color="gray">[{screenIntervalSec}s]</Text>
+      </Box>
+      <Box gap={2}>
+        <Text color="gray">[C]alendar [S]ettings [Q]uit</Text>
+      </Box>
+    </Box>
+  );
 
-  // Channel window counts
-  const assignments = getChannelWindowAssignments();
-  const channelWindowCounts = new Map<string, number>();
-  for (const ch of channels) {
-    channelWindowCounts.set(ch.name, assignments.filter(a => a.channel_name === ch.name).length);
+  // --- Sources Panel ---
+  const SourcesBar = () => {
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Box gap={2}>
+          <Text bold color={focusArea === "sources" ? "magenta" : "gray"}>SOURCES</Text>
+          <Text color="gray">{assignedCount}/{allSources.length} assigned</Text>
+        </Box>
+        {allSources.map((w, i) => {
+          const sel = focusArea === "sources" && i === sourcesIndex;
+          const assigned = w.channels.length > 0;
+          return (
+            <Box key={w.virtual ? AUDIO_SOURCE_KEY : windowKey(w)} paddingLeft={1}>
+              <Text wrap="truncate-end">
+                <Text color={sel ? "magenta" : "gray"}>{sel ? "▸" : " "} </Text>
+                <Text color={assigned ? "white" : "gray"} dimColor={!assigned}>{w.app}</Text>
+                <Text color="gray" dimColor={!assigned}> · {(w.title || "untitled").slice(0, 10)}</Text>
+                {assigned
+                  ? <Text color="magenta"> [{w.channels.join(",")}]</Text>
+                  : <Text color="gray" dimColor> —</Text>
+                }
+              </Text>
+            </Box>
+          );
+        })}
+        {channelPickerOpen && (
+          <Box flexDirection="column" paddingLeft={2} marginTop={0}>
+            <Text color="magenta" bold>Assign channel:</Text>
+            {channels.map((ch, i) => {
+              const sel = i === channelPickerIndex;
+              const w = allSources[sourcesIndex];
+              const has = w?.channels.includes(ch.name);
+              return (
+                <Box key={ch.id} paddingLeft={1}>
+                  <Text color={sel ? "magenta" : "gray"}>{sel ? "▸" : " "} {ch.name} {has ? "✓" : ""}</Text>
+                </Box>
+              );
+            })}
+          </Box>
+        )}
+      </Box>
+    );
+  };
+
+  // --- Filter Bar ---
+  const FilterBar = () => (
+    <Box paddingX={1} gap={1} flexWrap="wrap">
+      <Text
+        color={typeFilter.includes("screen") ? "white" : "gray"}
+        inverse={typeFilter.includes("screen")}
+      >[1] ▣ screen</Text>
+      <Text
+        color={typeFilter.includes("audio") ? "white" : "gray"}
+        inverse={typeFilter.includes("audio")}
+      >[2] ♪ audio</Text>
+      <Text color="gray">│</Text>
+      {channels.map((ch, i) => (
+        <Text
+          key={ch.name}
+          color={channelFilter.includes(ch.name) ? "magenta" : "gray"}
+          inverse={channelFilter.includes(ch.name)}
+        >[{i + 3}] {ch.name}</Text>
+      ))}
+      <Text color="gray">│</Text>
+      {searchMode ? (
+        <Box>
+          <Text color="magenta">/</Text>
+          <TextInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            onSubmit={() => setSearchMode(false)}
+          />
+        </Box>
+      ) : (
+        <Text color="gray">[/] {searchQuery || "search..."}</Text>
+      )}
+    </Box>
+  );
+
+  // --- Capture Feed ---
+  const feedHeight = Math.max(4, rows - 9 - (allSources.length > 0 ? allSources.length + 1 : 0));
+  const visibleCaptures = captures.slice(feedScroll, feedScroll + feedHeight);
+
+  const formatTime = (ts: string) => {
+    const today = localDateStr(new Date());
+    const date = ts.slice(0, 10);
+    if (date === today) return ts.slice(11, 19);
+    return date.slice(5) + " " + ts.slice(11, 16);
+  };
+
+  const CaptureRow = ({ cap, index }: { cap: Capture; index: number }) => {
+    const actualIndex = feedScroll + index;
+    const sel = focusArea === "feed" && actualIndex === feedIndex;
+    const time = formatTime(cap.timestamp);
+    const isAudio = cap.type === "audio";
+    const chTags = cap.channels.length > 0 ? cap.channels.join(",") : "";
+    const maxExcerpt = Math.max(10, cols - 50 - cap.app.length - (chTags ? chTags.length + 2 : 1));
+    return (
+      <Box paddingLeft={1}>
+        <Text color={sel ? "magenta" : "gray"}>{sel ? "▸" : " "} </Text>
+        <Text color="gray" dimColor>{time} </Text>
+        <Text color={isAudio ? "magenta" : "cyan"}>{isAudio ? "♪" : "▣"} </Text>
+        <Text color="white" bold>{cap.app} </Text>
+        <Text color="gray" wrap="truncate-end">{cap.excerpt.slice(0, maxExcerpt)} </Text>
+        {chTags ? <Text color="magenta">→{chTags}</Text> : <Text color="gray" dimColor>⊘</Text>}
+      </Box>
+    );
+  };
+
+  const Feed = () => (
+    <Box flexDirection="column" flexGrow={1}>
+      {visibleCaptures.length === 0 ? (
+        <Box paddingX={2} paddingY={1}>
+          <Text color="gray">No captures yet. Recording...</Text>
+        </Box>
+      ) : (
+        visibleCaptures.map((cap, i) => (
+          <CaptureRow key={cap.id} cap={cap} index={i} />
+        ))
+      )}
+    </Box>
+  );
+
+  // --- Detail View ---
+  if (view === "detail" && detailCapture) {
+    const cap = detailCapture;
+    const isAudio = cap.type === "audio";
+    return (
+      <Box flexDirection="column" paddingX={1} height={rows}>
+        <Box paddingX={1} justifyContent="space-between">
+          <Text bold color="magenta">tunr</Text>
+          <Text color="gray">[Esc] back</Text>
+        </Box>
+        <Box borderStyle="round" borderColor="magenta" flexDirection="column" paddingX={1} paddingY={0} marginX={1}>
+          <Box gap={2}>
+            <Text color="gray">{cap.timestamp.slice(0, 19)}</Text>
+            <Text color={isAudio ? "magenta" : "cyan"} bold>{isAudio ? "♪ AUDIO" : "▣ SCREEN"}</Text>
+          </Box>
+
+          <Box marginTop={1}>
+            <Text color="gray" bold>SOURCE  </Text>
+            <Text color="white" bold>{cap.app}</Text>
+            <Text color="gray"> · {cap.title}</Text>
+          </Box>
+
+          {cap.channels.length > 0 && (
+            <Box marginTop={1} gap={1}>
+              <Text color="gray" bold>CHANNELS</Text>
+              {cap.channels.map(ch => (
+                <Text key={ch} color="magenta"> {ch}</Text>
+              ))}
+            </Box>
+          )}
+
+          <Box marginTop={1} flexDirection="column">
+            <Text color="gray" bold>{isAudio ? "TRANSCRIPT" : "CAPTURED TEXT"}</Text>
+            <Box marginTop={0} flexDirection="column">
+              <Text color="white" wrap="wrap">{cap.fullText}</Text>
+            </Box>
+          </Box>
+        </Box>
+      </Box>
+    );
   }
 
-  return (
-    <Box flexDirection="column" paddingX={1} height={rows}>
-      {/* Header */}
-      <Box borderStyle="single" borderColor="green" paddingX={1} justifyContent="space-between">
-        <Text color="green" bold> TUNR CONTROL ROOM </Text>
-        <Text color="green">{dateStr} {clock}</Text>
-      </Box>
-
-      <Box flexDirection="column" marginTop={0} flexGrow={1}>
-
-        {/* CHANNELS */}
-        <Box flexDirection="column" borderStyle="single" borderColor={activePanel === "channels" ? "cyan" : "green"} paddingX={1}>
+  // --- Settings View ---
+  if (view === "settings") {
+    const tabs: { key: SettingsTab; label: string }[] = [
+      { key: "general", label: "General" },
+      { key: "channels", label: "Channels" },
+    ];
+    return (
+      <Box flexDirection="column" paddingX={1} height={rows}>
+        <Box paddingX={1} justifyContent="space-between">
           <Box gap={2}>
-            <Text color={activePanel === "channels" ? "cyan" : "green"} bold> CHANNELS </Text>
-            <Text color="gray">[C] Create  [X] Delete  [O] Toggle audio</Text>
+            <Text bold color="magenta">tunr</Text>
+            <Text color="gray">Settings</Text>
           </Box>
-          {inputMode === "create_channel" ? (
-            <Box>
-              <Text color="yellow">New channel: </Text>
-              <TextInput
-                value={newChannelName}
-                onChange={setNewChannelName}
-                onSubmit={(val: string) => {
-                  const name = val.trim();
-                  if (name) {
-                    try { db.run(`INSERT INTO channels (name) VALUES (?)`, name); } catch {}
-                    setChannels(getChannels());
-                  }
-                  setInputMode("normal");
-                  setNewChannelName("");
-                }}
-              />
-            </Box>
-          ) : null}
-          {channels.length > 0 ? (
-            <Box flexDirection="column">
-              {channels.map((ch, i) => {
-                const isSelected = activePanel === "channels" && i === channelIndex;
-                const isSub = subscriptions.includes(ch.name);
-                const wCount = channelWindowCounts.get(ch.name) || 0;
-                return (
-                  <Box key={ch.id}>
-                    <Text color={isSelected ? "cyan" : "green"}>
-                      {isSelected ? "▸ " : "  "}
-                    </Text>
-                    <Text color="green" bold>{String(i + 1)}.</Text>
-                    <Text color="white"> {ch.name}</Text>
-                    <Text color="gray"> [{wCount} windows]</Text>
-                    <Text color={ch.include_audio ? "green" : "gray"}> [audio:{ch.include_audio ? "on" : "off"}]</Text>
-                    {isSub ? <Text color="cyan"> [SUB]</Text> : null}
-                  </Box>
-                );
-              })}
-            </Box>
-          ) : (
-            <Text color="yellow"> No channels. Press C to create one.</Text>
-          )}
+          <Text color="gray">[Esc] back [Tab] tab</Text>
         </Box>
-
-        {/* WINDOWS */}
-        <Box flexDirection="column" borderStyle="single" borderColor={activePanel === "windows" ? "cyan" : "green"} paddingX={1}>
-          <Box gap={2}>
-            <Text color={activePanel === "windows" ? "cyan" : "green"} bold> WINDOWS </Text>
-            <Text color="green">
-              {recBlink ? "●" : "○"} REC {recordCount} [{screenIntervalSec}s]
-            </Text>
-            <Text color="gray">[1-9] Assign  [0] Remove</Text>
-          </Box>
-          {allWindows.length > 0 ? (
-            <Box flexDirection="column">
-              {allWindows.map((w, i) => {
-                const isSelected = activePanel === "windows" && i === windowIndex;
-                const chTags = w.channels.length > 0 ? w.channels.join(",") : "";
-                return (
-                  <Box key={windowKey(w)}>
-                    <Text color={isSelected ? "cyan" : "green"}>
-                      {isSelected ? "▸ " : "  "}
-                    </Text>
-                    <Text color="white">{w.app}</Text>
-                    <Text color="gray"> | {(w.title || "untitled").slice(0, 35)}</Text>
-                    {chTags ? (
-                      <Text color="cyan"> [{chTags}]</Text>
-                    ) : (
-                      <Text color="gray"> (none)</Text>
-                    )}
-                  </Box>
-                );
-              })}
-            </Box>
-          ) : (
-            <Text color="yellow"> No windows detected</Text>
-          )}
-        </Box>
-
-        {/* AUDIO */}
-        <Box flexDirection="column" borderStyle="single" borderColor={audioEnabled ? "green" : "gray"} paddingX={1}>
-          <Box gap={2}>
-            <Text color={audioEnabled ? "green" : "gray"} bold> AUDIO </Text>
-            <Text color={audioEnabled ? "green" : "red"}>
-              {audioEnabled && audioStatus === "recording" ? (recBlink ? "●" : "○") : "○"} {audioEnabled ? audioStatus.toUpperCase() : "OFF"} [{audioSize}]
-            </Text>
-          </Box>
-          {audioEnabled && lastTranscript ? (
-            <Text color="green"> {`> ${lastTranscript}`}</Text>
-          ) : null}
-        </Box>
-
-        {/* STATUS */}
         <Box paddingX={1} gap={2}>
-          <Text color="green">BROADCAST: {broadcastCount} screen, {audioBroadcastCount} audio</Text>
-          <Text color="gray">SUBS: {subscriptions.length > 0 ? subscriptions.join(", ") : "none"}</Text>
+          {tabs.map(t => (
+            <Text key={t.key} color={settingsTab === t.key ? "magenta" : "gray"} bold={settingsTab === t.key} underline={settingsTab === t.key}>
+              {t.label}
+            </Text>
+          ))}
+        </Box>
+        <Box flexDirection="column" paddingX={1} marginTop={1} flexGrow={1}>
+          {settingsTab === "general" && (
+            <>
+              <Text color="gray" bold dimColor>RECORDING</Text>
+              <Box paddingLeft={1}>
+                <Text color={settingsIndex === 0 ? "magenta" : "white"}>
+                  {settingsIndex === 0 ? "▸" : " "} Screen interval: {screenIntervalSec}s  [[ ]] adjust
+                </Text>
+              </Box>
+              <Box paddingLeft={1}>
+                <Text color={settingsIndex === 1 ? "magenta" : "white"}>
+                  {settingsIndex === 1 ? "▸" : " "} Audio chunk: {audioChunkSec}s  [[ ]] adjust
+                </Text>
+              </Box>
+              <Text color="gray" bold dimColor marginTop={1}>STORAGE</Text>
+              <Box paddingLeft={1}>
+                <Text color={settingsIndex === 2 ? "magenta" : "white"}>
+                  {settingsIndex === 2 ? "▸" : " "} {deleteConfirm ? <Text color="red" bold>Press Enter to confirm DELETE ALL</Text> : "Delete all captures  [Enter]"}
+                </Text>
+              </Box>
+              <Box paddingLeft={1} marginTop={1}>
+                <Text color="gray">{recordCount} screen · {audioBroadcastCount} audio</Text>
+              </Box>
+            </>
+          )}
+          {settingsTab === "channels" && (
+            <>
+              <Text color="gray" bold dimColor>CHANNELS  [C] create  [X] delete</Text>
+              {channelCreateMode ? (
+                <Box paddingLeft={1}>
+                  <Text color="magenta">New: </Text>
+                  <TextInput
+                    value={newChannelName}
+                    onChange={setNewChannelName}
+                    onSubmit={(val: string) => {
+                      const name = val.trim();
+                      if (name) { try { db.run(`INSERT INTO channels (name) VALUES (?)`, name); } catch {} setChannels(getChannels()); }
+                      setChannelCreateMode(false); setNewChannelName("");
+                    }}
+                  />
+                </Box>
+              ) : null}
+              {channels.length === 0 ? (
+                <Box paddingLeft={1}><Text color="gray">No channels. Press C to create.</Text></Box>
+              ) : channels.map((ch, i) => {
+                const sel = settingsIndex === i;
+                const isSub = subscriptions.includes(ch.name);
+                return (
+                  <Box key={ch.id} paddingLeft={1} gap={1}>
+                    <Text color={sel ? "magenta" : "white"}>{sel ? "▸" : " "}</Text>
+                    <Text color="white" bold>{ch.name}</Text>
+                    {isSub && <Text color="cyan">SUB</Text>}
+                  </Box>
+                );
+              })}
+            </>
+          )}
         </Box>
       </Box>
+    );
+  }
 
-      {/* Controls */}
-      <Box paddingX={1} marginTop={0}>
-        <Text color="green">
-          {deleteConfirm
-            ? <Text color="red" bold>Press D again to DELETE ALL DATA</Text>
-            : "[Tab] Panel  [↑↓] NAV  [A] MIC  [[ ]] INTERVAL  [D] DELETE  [Q] QUIT"}
+  // --- Calendar View ---
+  if (view === "calendar") {
+    const weeks = Math.max(1, Math.ceil(calDays.length / 7));
+    const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const maxCount = Math.max(1, ...calDays.map(d => d.total));
+
+    const heatBg = (count: number, isCursor: boolean): string => {
+      if (isCursor) return "magenta";
+      if (count === 0) return "#555555";
+      const level = Math.ceil((count / maxCount) * 4);
+      return ["#0e4429", "#006d32", "#26a641", "#39d353"][Math.min(level - 1, 3)];
+    };
+
+    const cursorDayIdx = calCursorX * 7 + calCursorY;
+    const cursorDay = cursorDayIdx < calDays.length ? calDays[cursorDayIdx] : null;
+
+    // Month labels for the top
+    const monthLabels: { week: number; label: string }[] = [];
+    for (let w = 0; w < weeks; w++) {
+      const idx = w * 7;
+      if (idx < calDays.length) {
+        const m = calDays[idx].date.slice(5, 7);
+        const prev = w > 0 && (w - 1) * 7 < calDays.length ? calDays[(w - 1) * 7].date.slice(5, 7) : "";
+        if (m !== prev) monthLabels.push({ week: w, label: calDays[idx].date.slice(0, 7) });
+      }
+    }
+
+    if (calSelectedDate) {
+      // Day detail view with hourly bar + capture list
+      const calFeedH = Math.max(4, rows - 14);
+      const visibleCals = calCaptures.slice(calFeedScroll, calFeedScroll + calFeedH);
+      const maxHour = Math.max(1, ...calHourly.map(h => h.count));
+
+      return (
+        <Box flexDirection="column" paddingX={1} height={rows}>
+          <Box paddingX={1} justifyContent="space-between">
+            <Box gap={2}>
+              <Text bold color="magenta">tunr</Text>
+              <Text color="white" bold>{calSelectedDate}</Text>
+              <Text color="gray">{calCaptures.length} captures</Text>
+            </Box>
+            <Text color="gray">[Esc] back</Text>
+          </Box>
+
+          <Box paddingX={1} marginTop={0}>
+            {calHourly.map(h => {
+              const barH = Math.max(0, Math.round((h.count / maxHour) * 4));
+              const chars = ["_", ".", ":", "|", "#"];
+              return (
+                <Text key={h.hour} color={h.count > 0 ? "green" : "gray"} dimColor={h.count === 0}>
+                  {chars[barH]}
+                </Text>
+              );
+            })}
+            <Text color="gray"> 0h          12h          23h</Text>
+          </Box>
+
+          <Box flexDirection="column" flexGrow={1} marginTop={1}>
+            {visibleCals.length === 0 ? (
+              <Box paddingX={2}><Text color="gray">No captures on this day.</Text></Box>
+            ) : visibleCals.map((cap, i) => {
+              const actualIdx = calFeedScroll + i;
+              const sel = actualIdx === calFeedIndex;
+              const time = cap.timestamp.slice(11, 19);
+              const isAudio = cap.type === "audio";
+              return (
+                <Box key={cap.id} paddingLeft={1}>
+                  <Text color={sel ? "magenta" : "gray"}>{sel ? "▸" : " "} </Text>
+                  <Text color="gray" dimColor>{time} </Text>
+                  <Text color={isAudio ? "magenta" : "cyan"}>{isAudio ? "♪" : "▣"} </Text>
+                  <Text color="white" bold>{cap.app} </Text>
+                  <Text color="gray" wrap="truncate-end">{cap.excerpt.slice(0, 60)} </Text>
+                </Box>
+              );
+            })}
+          </Box>
+          <Box paddingX={1} justifyContent="space-between">
+            <Text color="gray">[↑↓] scroll [Enter] detail [Esc] back</Text>
+            {calCaptures.length > 0 && <Text color="gray">{calFeedIndex + 1}/{calCaptures.length}</Text>}
+          </Box>
+        </Box>
+      );
+    }
+
+    // Heatmap grid view
+    return (
+      <Box flexDirection="column" paddingX={1} height={rows}>
+        <Box paddingX={1} justifyContent="space-between">
+          <Box gap={2}>
+            <Text bold color="magenta">tunr</Text>
+            <Text color="gray">Calendar</Text>
+          </Box>
+          <Text color="gray">[Esc] back [Enter] open day</Text>
+        </Box>
+
+        <Box flexDirection="column" paddingX={1} marginTop={1}>
+          {/* Month labels */}
+          <Box paddingLeft={5}>
+            {Array.from({ length: weeks }, (_, w) => {
+              const ml = monthLabels.find(m => m.week === w);
+              return <Text key={w} color="gray">{ml ? ml.label.slice(5, 7) : "  "}</Text>;
+            })}
+          </Box>
+
+          {/* Grid: 7 rows (days) x N cols (weeks) */}
+          {dayLabels.map((label, dow) => (
+            <Box key={dow}>
+              <Text color="gray">{dow % 2 === 1 ? label : "   "} </Text>
+              {Array.from({ length: weeks }, (_, w) => {
+                const idx = w * 7 + dow;
+                const day = idx < calDays.length ? calDays[idx] : null;
+                const isCursor = w === calCursorX && dow === calCursorY;
+                const count = day?.total || 0;
+                return (
+                  <Text key={w} backgroundColor={heatBg(count, isCursor)}>{"  "}</Text>
+                );
+              })}
+            </Box>
+          ))}
+        </Box>
+
+        {/* Cursor info */}
+        <Box paddingX={1} marginTop={1} gap={2}>
+          {cursorDay ? (
+            <>
+              <Text color="white" bold>{cursorDay.date}</Text>
+              <Text color="gray">{cursorDay.screen} screen</Text>
+              <Text color="gray">{cursorDay.audio} audio</Text>
+              <Text color={cursorDay.total > 0 ? "green" : "gray"}>{cursorDay.total} total</Text>
+            </>
+          ) : <Text color="gray">--</Text>}
+        </Box>
+
+        <Box paddingX={1} marginTop={1}>
+          <Text color="gray">[←→↑↓] navigate [Enter] open day [Esc] back</Text>
+        </Box>
+      </Box>
+    );
+  }
+
+  // --- Feed View (default) ---
+  return (
+    <Box flexDirection="column" height={rows}>
+      <Header />
+      <Box borderStyle="round" borderColor="gray" marginX={1} marginBottom={0} flexDirection="column">
+        <SourcesBar />
+      </Box>
+      <FilterBar />
+      <Feed />
+      <Box paddingX={1} justifyContent="space-between">
+        <Text color="gray">
+          {focusArea === "sources" ? "[Enter] assign channel [↑↓] nav [Tab] feed" : "[↑↓] scroll [Enter] detail [/] search"}
         </Text>
+        {captures.length > 0 && <Text color="gray">{feedIndex + 1}/{captures.length}</Text>}
       </Box>
     </Box>
   );
