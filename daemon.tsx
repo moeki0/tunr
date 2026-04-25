@@ -418,79 +418,108 @@ function App() {
     }
   });
 
+  // Clock
+  const [now, setNow] = useState(new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const clock = now.toLocaleTimeString("ja-JP", { hour12: false });
+  const dateStr = now.toLocaleDateString("ja-JP");
+
   const allowed = [...windows.values()].filter((w) => w.permission === "allowed");
-  const denied = [...windows.values()].filter((w) => w.permission === "denied");
   const configured = [...windows.values()].filter((w) => w.permission !== "pending");
-  const pending = [...windows.values()].filter((w) => w.permission === "pending");
   const pendingWindow = pendingKey ? windows.get(pendingKey) : null;
 
+  const recBlink = now.getSeconds() % 2 === 0;
+
   return (
-    <Box flexDirection="column" padding={1}>
-      <Box marginBottom={1}>
-        <Text bold color="cyan">
-          uitocc watch
-        </Text>
-        <Text color="gray">
-          {" "}
-          — {allowed.length} watching, {recordCount} recorded
-        </Text>
-        <Text color={audioEnabled ? "green" : "gray"}>
-          {" "}| audio: {audioEnabled ? audioStatus : "off"}
+    <Box flexDirection="column" paddingX={1}>
+      {/* Header */}
+      <Box borderStyle="single" borderColor="green" paddingX={1} justifyContent="space-between">
+        <Text color="green" bold> UITOCC CONTROL ROOM </Text>
+        <Text color="green">
+          {dateStr} {clock}
         </Text>
       </Box>
 
-      {configured.length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          {configured.map((w, i) => {
-            const isSelected = !pendingKey && i === selectedIndex;
-            const isAllowed = w.permission === "allowed";
-            return (
-              <Box key={windowKey(w)}>
-                <Text color={isSelected ? "cyan" : undefined}>
-                  {isSelected ? "▸" : " "}
-                </Text>
-                <Text color={isAllowed ? "green" : "red"}>
-                  {isAllowed ? " ✓ " : " ✗ "}
-                </Text>
-                <Text bold={isAllowed} dimColor={!isAllowed}>{w.app}</Text>
-                <Text color="gray" dimColor={!isAllowed}>
-                  {" "}— {w.title || "(untitled)"}
-                </Text>
-              </Box>
-            );
-          })}
-        </Box>
-      )}
+      {/* Status bar */}
+      <Box paddingX={1} marginTop={0} gap={2}>
+        <Text color={allowed.length > 0 ? "green" : "yellow"}>
+          FEEDS: {allowed.length}/{configured.length}
+        </Text>
+        <Text color="green">
+          {recBlink ? "●" : "○"} REC {recordCount}
+        </Text>
+        <Text color={audioEnabled ? (audioStatus === "recording" ? "green" : "yellow") : "red"}>
+          {audioEnabled && audioStatus === "recording" ? (recBlink ? "●" : "○") : "○"} MIC {audioEnabled ? audioStatus.toUpperCase() : "OFF"}
+        </Text>
+        <Text color="green">SYS ONLINE</Text>
+      </Box>
 
+      {/* Feed list */}
+      <Box flexDirection="column" borderStyle="single" borderColor="green" marginTop={0} paddingX={1}>
+        <Text color="green" dimColor> MONITORED FEEDS </Text>
+        {configured.length > 0 ? (
+          <Box flexDirection="column">
+            {configured.map((w, i) => {
+              const isSelected = !pendingKey && i === selectedIndex;
+              const isAllowed = w.permission === "allowed";
+              const camId = String(i + 1).padStart(2, "0");
+              return (
+                <Box key={windowKey(w)}>
+                  <Text color={isSelected ? "cyan" : "green"}>
+                    {isSelected ? "▸ " : "  "}
+                  </Text>
+                  <Text color={isAllowed ? "green" : "red"}>
+                    CAM-{camId}
+                  </Text>
+                  <Text color={isAllowed ? "green" : "red"}>
+                    {isAllowed ? " [LIVE]  " : " [----]  "}
+                  </Text>
+                  <Text color={isAllowed ? "white" : "gray"} dimColor={!isAllowed}>
+                    {w.app}
+                  </Text>
+                  <Text color="gray" dimColor>
+                    {" "}| {(w.title || "untitled").slice(0, 50)}
+                  </Text>
+                </Box>
+              );
+            })}
+          </Box>
+        ) : (
+          <Text color="yellow"> NO FEEDS DETECTED </Text>
+        )}
+      </Box>
+
+      {/* Alert panel */}
       {pendingWindow ? (
-        <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-          <Text color="yellow" bold>
-            ⚡ New window detected
+        <Box flexDirection="column" borderStyle="single" borderColor="yellow" marginTop={0} paddingX={1}>
+          <Text color="yellow" bold> ⚠ UNIDENTIFIED FEED </Text>
+          <Text color="white">
+            {"  "}{pendingWindow.app}
+            <Text color="gray"> | {pendingWindow.title || "untitled"}</Text>
           </Text>
-          <Box marginTop={0}>
-            <Text>
-              {"  "}
-              <Text bold>{pendingWindow.app}</Text>
-              <Text color="gray"> — {pendingWindow.title || "(untitled)"}</Text>
-            </Text>
-          </Box>
-          <Box marginTop={0}>
-            <Text>
-              {"  "}Allow? <Text color="green" bold>(y)</Text>es / <Text color="red" bold>(n)</Text>o
-            </Text>
-          </Box>
+          <Text>
+            {"  "}AUTHORIZE? <Text color="green" bold>[Y]</Text> GRANT  <Text color="red" bold>[N]</Text> DENY
+          </Text>
         </Box>
       ) : null}
 
-      {lastTranscript && audioEnabled && (
-        <Box marginTop={1}>
-          <Text color="gray">🎙 {lastTranscript}</Text>
-        </Box>
-      )}
+      {/* Audio feed */}
+      <Box flexDirection="column" borderStyle="single" borderColor={audioEnabled ? "green" : "gray"} marginTop={0} paddingX={1}>
+        <Text color={audioEnabled ? "green" : "gray"} dimColor={!audioEnabled}> AUDIO INTERCEPT </Text>
+        {audioEnabled && lastTranscript ? (
+          <Text color="green"> {`> ${lastTranscript}`}</Text>
+        ) : (
+          <Text color="gray" dimColor> {audioEnabled ? "LISTENING..." : "DISABLED"}</Text>
+        )}
+      </Box>
 
-      <Box marginTop={1}>
-        <Text dimColor>
-          ↑↓ select  t toggle  a audio {audioEnabled ? "off" : "on"}  q quit
+      {/* Controls */}
+      <Box paddingX={1} marginTop={0}>
+        <Text color="green" dimColor>
+          [↑↓] NAV  [T] TOGGLE FEED  [A] MIC {audioEnabled ? "OFF" : "ON"}  [Q] SHUTDOWN
         </Text>
       </Box>
     </Box>
