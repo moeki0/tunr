@@ -6,5 +6,6 @@ export function getChannels(): ChannelRow[] {
 }
 
 export function getActiveSubscriptions(): string[] {
-  return (db.prepare(`SELECT channel_name FROM channel_subscriptions`).all() as any[]).map(r => r.channel_name);
+  // Subscriptions are now managed in-memory per MCP server session, not in DB
+  return [];
 }

@@ -24,17 +24,6 @@ function openDb(): Database | null {
   }
 }
 
-function openDbWritable(): Database | null {
-  try {
-    if (!existsSync(DB_PATH)) return null;
-    const db = new Database(DB_PATH);
-    db.run("PRAGMA busy_timeout=5000");
-    db.run("PRAGMA journal_mode=WAL");
-    return db;
-  } catch {
-    return null;
-  }
-}
 
 // --- Embedding helpers ---
 const EMBED_PATH = join(dirname(process.execPath), "tunr-embed");
@@ -271,12 +260,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
     try {
       const channels = db.prepare(
-        `SELECT c.name, c.include_audio,
-                cs.channel_name IS NOT NULL as subscribed,
-                COALESCE(cs.paused, 0) as paused
-         FROM channels c
-         LEFT JOIN channel_subscriptions cs ON cs.channel_name = c.name
-         ORDER BY c.id`
+        `SELECT name, include_audio FROM channels ORDER BY id`
       ).all() as any[];
 
       if (channels.length === 0) {
@@ -284,8 +268,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       const lines = channels.map((ch) => {
-        const icon = ch.paused ? "⏸" : ch.subscribed ? "●" : "○";
-        const status = ch.paused ? " (paused)" : ch.subscribed ? " (subscribed)" : "";
+        const subscribed = subscribedChannels.has(ch.name);
+        const icon = paused && subscribed ? "⏸" : subscribed ? "●" : "○";
+        const status = paused && subscribed ? " (paused)" : subscribed ? " (subscribed)" : "";
         return `${icon} ${ch.name} [audio: ${ch.include_audio ? "on" : "off"}]${status}`;
       });
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
@@ -299,7 +284,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     if (!channel || !/^[a-zA-Z0-9_\-]+$/.test(channel)) {
       return { content: [{ type: "text" as const, text: `Invalid channel name. Use alphanumeric, dash, or underscore (max 32 chars).` }] };
     }
-    const db = openDbWritable();
+    const db = openDb();
     if (!db) {
       return { content: [{ type: "text" as const, text: "Database not available. Is the watch daemon running?" }] };
     }
@@ -309,8 +294,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const available = db.prepare(`SELECT name FROM channels ORDER BY id`).all() as any[];
         return { content: [{ type: "text" as const, text: `Channel "${channel}" does not exist. Available: ${available.map(c => c.name).join(", ") || "(none)"}` }] };
       }
-      db.run(`INSERT OR REPLACE INTO channel_subscriptions (channel_name) VALUES (?)`, channel);
-      return { content: [{ type: "text" as const, text: `Subscribed to channel "${channel}". You will receive screen${db.prepare(`SELECT include_audio FROM channels WHERE name = ?`).get(channel)?.include_audio ? " and audio" : ""} notifications.` }] };
+      subscribedChannels.add(channel);
+      const hasAudio = (db.prepare(`SELECT include_audio FROM channels WHERE name = ?`).get(channel) as any)?.include_audio;
+      return { content: [{ type: "text" as const, text: `Subscribed to channel "${channel}". You will receive screen${hasAudio ? " and audio" : ""} notifications.` }] };
     } finally {
       db.close();
     }
@@ -318,52 +304,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   if (name === "unsubscribe") {
     const channel = (args as any).channel as string;
-    const db = openDbWritable();
-    if (!db) {
-      return { content: [{ type: "text" as const, text: "Database not available." }] };
-    }
-    try {
-      db.run(`DELETE FROM channel_subscriptions WHERE channel_name = ?`, channel);
-      return { content: [{ type: "text" as const, text: `Unsubscribed from channel "${channel}".` }] };
-    } finally {
-      db.close();
-    }
+    subscribedChannels.delete(channel);
+    return { content: [{ type: "text" as const, text: `Unsubscribed from channel "${channel}".` }] };
   }
 
   if (name === "pause") {
-    const db = openDbWritable();
-    if (!db) {
-      return { content: [{ type: "text" as const, text: "Database not available." }] };
+    if (subscribedChannels.size === 0) {
+      return { content: [{ type: "text" as const, text: "No active subscriptions to pause." }] };
     }
-    try {
-      const subs = db.prepare(`SELECT channel_name FROM channel_subscriptions WHERE paused = 0`).all() as any[];
-      if (subs.length === 0) {
-        return { content: [{ type: "text" as const, text: "No active subscriptions to pause." }] };
-      }
-      db.run(`UPDATE channel_subscriptions SET paused = 1 WHERE paused = 0`);
-      const names = subs.map((s: any) => s.channel_name);
-      return { content: [{ type: "text" as const, text: `Paused ${names.length} subscription(s): ${names.join(", ")}` }] };
-    } finally {
-      db.close();
-    }
+    paused = true;
+    return { content: [{ type: "text" as const, text: `Paused ${subscribedChannels.size} subscription(s): ${[...subscribedChannels].join(", ")}` }] };
   }
 
   if (name === "resume") {
-    const db = openDbWritable();
-    if (!db) {
-      return { content: [{ type: "text" as const, text: "Database not available." }] };
+    if (!paused) {
+      return { content: [{ type: "text" as const, text: "Subscriptions are not paused." }] };
     }
-    try {
-      const paused = db.prepare(`SELECT channel_name FROM channel_subscriptions WHERE paused = 1`).all() as any[];
-      if (paused.length === 0) {
-        return { content: [{ type: "text" as const, text: "No paused subscriptions to resume." }] };
-      }
-      db.run(`UPDATE channel_subscriptions SET paused = 0 WHERE paused = 1`);
-      const names = paused.map((s: any) => s.channel_name);
-      return { content: [{ type: "text" as const, text: `Resumed ${names.length} subscription(s): ${names.join(", ")}` }] };
-    } finally {
-      db.close();
-    }
+    paused = false;
+    return { content: [{ type: "text" as const, text: `Resumed ${subscribedChannels.size} subscription(s): ${[...subscribedChannels].join(", ")}` }] };
   }
 
   if (name === "search_screen_history") {
@@ -554,6 +512,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   return { content: [{ type: "text" as const, text: "Unknown tool" }] };
 });
 
+// --- In-memory subscription state (per MCP server process = per Claude Code session) ---
+const subscribedChannels = new Set<string>();
+let paused = false;
+
 // Compact diff — only changed lines with position info
 function makeDiff(oldLines: string[], newLines: string[]): string {
   const m = oldLines.length, n = newLines.length;
@@ -622,9 +584,9 @@ async function pollDb() {
     const db = openDb();
     if (!db) continue;
     try {
-      // Get subscribed channels
-      const subs = db.prepare("SELECT channel_name FROM channel_subscriptions WHERE paused = 0").all() as any[];
-      if (subs.length === 0) {
+      // Get active subscriptions from memory
+      const subNames = paused ? [] : [...subscribedChannels];
+      if (subNames.length === 0) {
         // Advance cursors so paused period is skipped on resume
         const maxScreen = db.prepare("SELECT MAX(id) as m FROM screen_states").get() as any;
         const maxAudio = db.prepare("SELECT MAX(id) as m FROM audio_transcripts").get() as any;
@@ -632,7 +594,6 @@ async function pollDb() {
         if (maxAudio?.m) lastAudioId = maxAudio.m;
         continue;
       }
-      const subNames = subs.map((s: any) => s.channel_name);
 
       // New screen records
       const screens = db.prepare(
@@ -701,12 +662,6 @@ async function pollDb() {
       db.close();
     }
   }
-}
-
-// Clear stale subscriptions from previous sessions
-const initDb = openDbWritable();
-if (initDb) {
-  try { initDb.run("DELETE FROM channel_subscriptions"); } finally { initDb.close(); }
 }
 
 await mcp.connect(new StdioServerTransport());
