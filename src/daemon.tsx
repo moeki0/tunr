@@ -179,6 +179,18 @@ function App() {
   useEffect(() => { windowsRef.current = windows; }, [windows]);
   useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
 
+  // Sync include_audio flag on channels when audio source assignment changes
+  useEffect(() => {
+    const audioChans = audioSource?.channels ?? [];
+    const allChans = getChannels();
+    for (const ch of allChans) {
+      const shouldInclude = audioChans.includes(ch.name) ? 1 : 0;
+      if (ch.include_audio !== shouldInclude) {
+        db.run(`UPDATE channels SET include_audio = ? WHERE name = ?`, shouldInclude, ch.name);
+      }
+    }
+  }, [audioSource?.channels.join(",")]);
+
   // Keep audio source's lastSeen fresh so it doesn't get cleaned up
   useEffect(() => {
     const iv = setInterval(() => {
