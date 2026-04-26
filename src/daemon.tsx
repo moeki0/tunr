@@ -841,13 +841,16 @@ function App() {
     const sel = focusArea === "feed" && actualIndex === feedIndex;
     const time = formatTime(cap.timestamp);
     const isAudio = cap.type === "audio";
+    const isIngested = cap.type === "ingested";
     const chTags = cap.channels.length > 0 ? cap.channels.join(",") : "";
     const maxExcerpt = Math.max(10, cols - 50 - cap.app.length - (chTags ? chTags.length + 2 : 1));
+    const typeColor = isAudio ? "magenta" : isIngested ? "yellow" : "cyan";
+    const typeGlyph = isAudio ? "♪" : isIngested ? "⇥" : "▣";
     return (
       <Box paddingLeft={1}>
         <Text color={sel ? "magenta" : "gray"}>{sel ? "▸" : " "} </Text>
         <Text color="gray" dimColor>{time} </Text>
-        <Text color={isAudio ? "magenta" : "cyan"}>{isAudio ? "♪" : "▣"} </Text>
+        <Text color={typeColor}>{typeGlyph} </Text>
         <Text color="white" bold>{cap.app} </Text>
         <Text color="gray" wrap="truncate-end">{cap.excerpt.slice(0, maxExcerpt)} </Text>
         {chTags ? <Text color="magenta">→{chTags}</Text> : <Text color="gray" dimColor>⊘</Text>}
