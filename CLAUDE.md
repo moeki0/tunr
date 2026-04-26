@@ -34,8 +34,9 @@ Channel = unit of window grouping. Create channels in the TUI, then manually ass
 - `list_channels()` — available channels + subscription status
 - `subscribe(channel)` — subscribe to channel notifications
 - `unsubscribe(channel)` — stop receiving from channel
-- `search_screen_history(query, channel?, app?, minutes?, limit?)` — search observed screen text (vector similarity via NLEmbedding, LIKE fallback)
+- `search_screen_history(query, channel?, app?, minutes?, limit?)` — search observed screen text (vector similarity via NLEmbedding, LIKE fallback). Prefers diff-based matching for "what changed" queries
 - `recent_screens(channel?, app?, minutes?, limit?)` — recent screen states
+- `page_history(title, minutes?, limit?)` — change history of a page (initial capture + diffs over time)
 - `recent_audio(channel?, minutes?, limit?)` — recent audio transcripts
 - `search_audio(query, channel?, minutes?, limit?)` — search audio transcripts
 

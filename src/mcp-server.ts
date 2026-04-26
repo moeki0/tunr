@@ -247,6 +247,29 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["query"],
       },
     },
+    {
+      name: "page_history",
+      description:
+        "Get the change history of a page. Returns the initial full capture followed by diffs showing what changed over time. Use after search_screen_history to dive deeper into a specific page.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          title: {
+            type: "string",
+            description: "Window/page title to search for (partial match)",
+          },
+          minutes: {
+            type: "number",
+            description: "How far back to look in minutes (default: 60)",
+          },
+          limit: {
+            type: "number",
+            description: "Max results to return (default: 50)",
+          },
+        },
+        required: ["title"],
+      },
+    },
   ],
 }));
 
@@ -349,39 +372,49 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       const extraWhere = extraClauses.length > 0 ? ` AND ${extraClauses.join(" AND ")}` : "";
 
-      // Try vector search first
+      // Try vector search first (prefer diff_embedding, fallback to embedding)
       const queryVec = queryEmbedding(query);
       if (queryVec) {
         const rows = db.prepare(
-          `SELECT timestamp, app, window_title, texts, embedding, channel_names FROM screen_states
-           WHERE timestamp > ? AND embedding IS NOT NULL${extraWhere}
+          `SELECT timestamp, app, window_title, texts, diff_text, embedding, diff_embedding, channel_names FROM screen_states
+           WHERE timestamp > ? AND (embedding IS NOT NULL OR diff_embedding IS NOT NULL)${extraWhere}
            ORDER BY timestamp DESC LIMIT 200`
         ).all(since, ...extraParams) as any[];
 
         if (rows.length > 0) {
           const scored = rows.map((r) => {
-            const emb = blobToFloat64Array(r.embedding);
-            const score = cosineSimilarity(queryVec, emb);
-            return { ...r, score };
+            // Score against diff_embedding if available, otherwise full embedding
+            let score = 0;
+            let matchType = "full";
+            if (r.diff_embedding) {
+              const diffEmb = blobToFloat64Array(r.diff_embedding);
+              score = cosineSimilarity(queryVec, diffEmb);
+              matchType = "diff";
+            } else if (r.embedding) {
+              const emb = blobToFloat64Array(r.embedding);
+              score = cosineSimilarity(queryVec, emb);
+            }
+            return { ...r, score, matchType };
           }).sort((a, b) => b.score - a.score).slice(0, limit);
 
           const result = scored.map((r) => {
             let texts: string[];
             try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
             const ch = r.channel_names ? ` [${r.channel_names}]` : "";
-            return `[${r.timestamp}] ${r.app} — ${r.window_title}${ch} (similarity: ${r.score.toFixed(3)})\n${texts.join("\n")}`;
+            const diff = r.diff_text ? `\n[diff]\n${r.diff_text}` : "";
+            return `[${r.timestamp}] ${r.app} — ${r.window_title}${ch} (${r.matchType}: ${r.score.toFixed(3)})${diff}\n${texts.join("\n")}`;
           }).join("\n\n---\n\n");
 
           return { content: [{ type: "text" as const, text: result }] };
         }
       }
 
-      // Fallback to LIKE search
+      // Fallback to LIKE search (search in texts and diff_text)
       const rows = db.prepare(
-        `SELECT timestamp, app, window_title, texts, channel_names FROM screen_states
-         WHERE timestamp > ? AND (app LIKE ? OR window_title LIKE ? OR texts LIKE ?)${extraWhere}
+        `SELECT timestamp, app, window_title, texts, diff_text, channel_names FROM screen_states
+         WHERE timestamp > ? AND (app LIKE ? OR window_title LIKE ? OR texts LIKE ? OR diff_text LIKE ?)${extraWhere}
          ORDER BY timestamp DESC LIMIT ?`
-      ).all(since, `%${query}%`, `%${query}%`, `%${query}%`, ...extraParams, limit) as any[];
+      ).all(since, `%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, ...extraParams, limit) as any[];
 
       if (rows.length === 0) {
         return { content: [{ type: "text" as const, text: `No screen history matching "${query}" in the last ${minutes} minutes.` }] };
@@ -391,7 +424,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         let texts: string[];
         try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
         const ch = r.channel_names ? ` [${r.channel_names}]` : "";
-        return `[${r.timestamp}] ${r.app} — ${r.window_title}${ch}\n${texts.join("\n")}`;
+        const diff = r.diff_text ? `\n[diff]\n${r.diff_text}` : "";
+        return `[${r.timestamp}] ${r.app} — ${r.window_title}${ch}${diff}\n${texts.join("\n")}`;
       }).join("\n\n---\n\n");
 
       return { content: [{ type: "text" as const, text: result }] };
@@ -502,6 +536,44 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const result = rows.map((r) =>
         `[${r.timestamp}] ${r.transcript}`
       ).join("\n\n---\n\n");
+
+      return { content: [{ type: "text" as const, text: result }] };
+    } finally {
+      db.close();
+    }
+  }
+
+  if (name === "page_history") {
+    const db = openDb();
+    if (!db) {
+      return { content: [{ type: "text" as const, text: "No screen history available. Is the watch daemon running?" }] };
+    }
+    try {
+      const titleFilter = (args as any).title as string;
+      const minutes = ((args as any).minutes as number) || 60;
+      const limit = ((args as any).limit as number) || 50;
+      const since = new Date(Date.now() - minutes * 60_000).toISOString();
+
+      const rows = db.prepare(
+        `SELECT timestamp, app, window_title, window_id, texts, diff_text FROM screen_states
+         WHERE timestamp > ? AND window_title LIKE ?
+         ORDER BY timestamp ASC LIMIT ?`
+      ).all(since, `%${titleFilter}%`, limit) as any[];
+
+      if (rows.length === 0) {
+        return { content: [{ type: "text" as const, text: `No page history matching "${titleFilter}" in the last ${minutes} minutes.` }] };
+      }
+
+      const result = rows.map((r, i) => {
+        const isInitial = !r.diff_text;
+        if (isInitial) {
+          let texts: string[];
+          try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
+          return `[${r.timestamp}] ${r.app} — ${r.window_title} (initial)\n${texts.join("\n")}`;
+        } else {
+          return `[${r.timestamp}] ${r.app} — ${r.window_title} (diff)\n${r.diff_text}`;
+        }
+      }).join("\n\n---\n\n");
 
       return { content: [{ type: "text" as const, text: result }] };
     } finally {

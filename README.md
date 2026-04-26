@@ -178,6 +178,7 @@ These tools are available to Claude Code when the MCP server is running:
 |------|-------------|
 | `search_screen_history(query, channel?, app?, minutes?, limit?)` | Search screen text (vector similarity + keyword fallback) |
 | `recent_screens(channel?, app?, minutes?, limit?)` | Get recent screen states |
+| `page_history(title, minutes?, limit?)` | Change history of a page (initial capture + diffs) |
 
 ### Audio tools
 

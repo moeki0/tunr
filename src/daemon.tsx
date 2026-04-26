@@ -289,6 +289,27 @@ function App() {
     let active = true;
     // Per-window state: last seen text, when it last changed, whether we've recorded since last change
     const windowState = new Map<string, { textsJson: string; lastChangeAt: number; recorded: boolean }>();
+    // Per-page (window_id + title) last recorded texts for diff computation
+    const lastRecordedTexts = new Map<string, string[]>();
+
+    function computeDiffLines(oldLines: string[], newLines: string[]): string[] {
+      const m = oldLines.length, n = newLines.length;
+      const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+      for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+          dp[i][j] = oldLines[i - 1] === newLines[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+        }
+      }
+      const changed: string[] = [];
+      let i = m, j = n;
+      while (i > 0 || j > 0) {
+        if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) { i--; j--; }
+        else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) { changed.push(newLines[j - 1]); j--; }
+        else { i--; }
+      }
+      changed.reverse();
+      return changed;
+    }
 
     async function record() {
       while (active) {
@@ -313,10 +334,13 @@ function App() {
           const state = windowState.get(key);
 
           if (!state) {
-            // First time seeing this window — record immediately
-            const embedding = generateEmbedding(w.texts.join("\n"));
+            // First time seeing this window — record immediately (no diff)
+            const fullText = w.texts.join("\n");
+            const embedding = generateEmbedding(fullText);
             const channelNamesJson = JSON.stringify(tw.channels);
-            insertStmt.run(new Date().toISOString(), w.pid, w.window_index, w.app, w.title, textsJson, embedding, channelNamesJson, w.window_id);
+            const pageKey = `${w.window_id}\0${w.title}`;
+            lastRecordedTexts.set(pageKey, w.texts);
+            insertStmt.run(new Date().toISOString(), w.pid, w.window_index, w.app, w.title, textsJson, embedding, channelNamesJson, w.window_id, null, null);
             setRecordCount((c) => c + 1);
             windowState.set(key, { textsJson, lastChangeAt: now, recorded: true });
             continue;
@@ -332,9 +356,22 @@ function App() {
 
           // Content unchanged — check if settled long enough
           if (!state.recorded && (now - state.lastChangeAt) >= settleSecRef.current * 1000) {
-            const embedding = generateEmbedding(w.texts.join("\n"));
+            const fullText = w.texts.join("\n");
+            const embedding = generateEmbedding(fullText);
             const channelNamesJson = JSON.stringify(tw.channels);
-            insertStmt.run(new Date().toISOString(), w.pid, w.window_index, w.app, w.title, textsJson, embedding, channelNamesJson, w.window_id);
+            const pageKey = `${w.window_id}\0${w.title}`;
+            const prevTexts = lastRecordedTexts.get(pageKey);
+            let diffText: string | null = null;
+            let diffEmbedding: Buffer | null = null;
+            if (prevTexts) {
+              const diffLines = computeDiffLines(prevTexts, w.texts);
+              if (diffLines.length > 0) {
+                diffText = diffLines.join("\n");
+                diffEmbedding = generateEmbedding(diffText);
+              }
+            }
+            lastRecordedTexts.set(pageKey, w.texts);
+            insertStmt.run(new Date().toISOString(), w.pid, w.window_index, w.app, w.title, textsJson, embedding, channelNamesJson, w.window_id, diffText, diffEmbedding);
             setRecordCount((c) => c + 1);
             state.recorded = true;
           }
