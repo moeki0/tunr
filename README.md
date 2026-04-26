@@ -280,6 +280,67 @@ Then wire the hooks into `~/.claude/settings.json`:
 
 Adjust the `PostToolUse` matcher (`Bash`, `Edit`, `Write`, etc.) to record only the tools you care about.
 
+#### GitHub notifications
+
+Poll your GitHub notifications (PR reviews, mentions, assignments, etc.) and stream them into tunr.
+
+```bash
+mkdir -p ~/.local/bin ~/.cache
+cat > ~/.local/bin/tunr-github-poll.sh << 'POLL'
+#!/bin/bash
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/bin:/bin:$PATH"
+
+since_file="$HOME/.cache/tunr-github-since"
+since=$(cat "$since_file" 2>/dev/null || date -u -v-10M +%Y-%m-%dT%H:%M:%SZ)
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+gh api "notifications?since=${since}&all=true" 2>/dev/null \
+  | jq -c '.[]?' \
+  | while read -r n; do
+      reason=$(printf '%s' "$n" | jq -r '.reason // ""')
+      repo=$(printf '%s' "$n" | jq -r '.repository.full_name // ""')
+      type=$(printf '%s' "$n" | jq -r '.subject.type // ""')
+      title=$(printf '%s' "$n" | jq -r '.subject.title // ""')
+      url=$(printf '%s' "$n" | jq -r '.subject.url // ""')
+      updated=$(printf '%s' "$n" | jq -r '.updated_at // ""')
+
+      printf '[%s] %s — %s\n%s\n%s\n' "$reason" "$repo" "$title" "$type" "$url" \
+        | tunr ingest --source github \
+            --meta "reason=$reason" \
+            --meta "repo=$repo" \
+            --meta "type=$type" \
+            --meta "updated=$updated" || true
+    done
+
+printf '%s' "$now" > "$since_file"
+POLL
+chmod +x ~/.local/bin/tunr-github-poll.sh
+```
+
+Run it every 5 minutes via launchd:
+
+```xml
+<!-- ~/Library/LaunchAgents/com.you.tunr-github-poll.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.you.tunr-github-poll</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/YOU/.local/bin/tunr-github-poll.sh</string></array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.you.tunr-github-poll.plist
+```
+
+Requires `gh auth login` (uses your existing GitHub CLI auth). The since cursor at `~/.cache/tunr-github-since` ensures no duplicate ingestion.
+
 ### Send (one-shot)
 
 Capture the frontmost window and send it to Claude Code instantly:
