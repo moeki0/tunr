@@ -36,6 +36,7 @@ export interface Capture {
   fullText: string;
   channels: string[];
   durationSec?: number;
+  meta?: string;
 }
 
 export interface DayCount {

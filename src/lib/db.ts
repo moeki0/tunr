@@ -152,7 +152,7 @@ export function getRecentCaptures(
   }
 
   if (typeFilter.length === 0 || typeFilter.includes("ingested")) {
-    let sql = `SELECT id, timestamp, source, channel_name, text FROM ingested WHERE timestamp > ?`;
+    let sql = `SELECT id, timestamp, source, channel_name, text, meta FROM ingested WHERE timestamp > ?`;
     const params: any[] = [since];
     if (channelFilter.length > 0) {
       sql += ` AND (${channelFilter.map(() => `channel_name = ?`).join(" OR ")})`;
@@ -176,6 +176,7 @@ export function getRecentCaptures(
         excerpt: r.text.slice(0, 80),
         fullText: r.text,
         channels: r.channel_name ? [r.channel_name] : [],
+        meta: r.meta || undefined,
       });
     }
   }
@@ -252,10 +253,10 @@ export function getCapturesForDate(date: string, limit: number = 200): Capture[]
     captures.push({ id: `a${r.id}`, timestamp: r.timestamp, type: "audio", app: "Audio", title: "whisper", excerpt: r.transcript.slice(0, 80), fullText: r.transcript, channels: [] });
   }
   const ingestedRows = db.prepare(
-    `SELECT id, timestamp, source, channel_name, text FROM ingested WHERE date(timestamp, 'localtime') = ? ORDER BY timestamp DESC LIMIT ?`
+    `SELECT id, timestamp, source, channel_name, text, meta FROM ingested WHERE date(timestamp, 'localtime') = ? ORDER BY timestamp DESC LIMIT ?`
   ).all(date, limit) as any[];
   for (const r of ingestedRows) {
-    captures.push({ id: `i${r.id}`, timestamp: r.timestamp, type: "ingested", app: `ingested:${r.source}`, title: r.source, excerpt: r.text.slice(0, 80), fullText: r.text, channels: r.channel_name ? [r.channel_name] : [] });
+    captures.push({ id: `i${r.id}`, timestamp: r.timestamp, type: "ingested", app: `ingested:${r.source}`, title: r.source, excerpt: r.text.slice(0, 80), fullText: r.text, channels: r.channel_name ? [r.channel_name] : [], meta: r.meta || undefined });
   }
   captures.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   return captures.slice(0, limit);
