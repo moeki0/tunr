@@ -873,6 +873,18 @@ function App() {
   if (view === "detail" && detailCapture) {
     const cap = detailCapture;
     const isAudio = cap.type === "audio";
+    const isIngested = cap.type === "ingested";
+    let metaEntries: [string, string][] = [];
+    if (cap.meta) {
+      try {
+        const parsed = JSON.parse(cap.meta);
+        if (parsed && typeof parsed === "object") {
+          metaEntries = Object.entries(parsed).map(([k, v]) => [k, String(v)]);
+        }
+      } catch {
+        metaEntries = [["raw", cap.meta]];
+      }
+    }
     return (
       <Box flexDirection="column" paddingX={1} height={rows}>
         <Box paddingX={1} justifyContent="space-between">
@@ -882,7 +894,7 @@ function App() {
         <Box borderStyle="round" borderColor="magenta" flexDirection="column" paddingX={1} paddingY={0} marginX={1}>
           <Box gap={2}>
             <Text color="gray">{cap.timestamp.slice(0, 19)}</Text>
-            <Text color={isAudio ? "magenta" : "cyan"} bold>{isAudio ? "♪ AUDIO" : "▣ SCREEN"}</Text>
+            <Text color={isAudio ? "magenta" : isIngested ? "yellow" : "cyan"} bold>{isAudio ? "♪ AUDIO" : isIngested ? "⇥ INGESTED" : "▣ SCREEN"}</Text>
           </Box>
 
           <Box marginTop={1}>
@@ -900,8 +912,20 @@ function App() {
             </Box>
           )}
 
+          {metaEntries.length > 0 && (
+            <Box marginTop={1} flexDirection="column">
+              <Text color="gray" bold>META</Text>
+              {metaEntries.map(([k, v]) => (
+                <Box key={k} gap={1}>
+                  <Text color="cyan">{k}</Text>
+                  <Text color="white">{v}</Text>
+                </Box>
+              ))}
+            </Box>
+          )}
+
           <Box marginTop={1} flexDirection="column">
-            <Text color="gray" bold>{isAudio ? "TRANSCRIPT" : "CAPTURED TEXT"}</Text>
+            <Text color="gray" bold>{isAudio ? "TRANSCRIPT" : isIngested ? "INGESTED TEXT" : "CAPTURED TEXT"}</Text>
             <Box marginTop={0} flexDirection="column">
               <Text color="white" wrap="wrap">{cap.fullText}</Text>
             </Box>
