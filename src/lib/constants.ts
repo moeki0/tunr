@@ -6,15 +6,26 @@ export const DB_PATH = join(DATA_DIR, "tunr.db");
 export const AUDIO_DIR = join(DATA_DIR, "audio");
 export const SETTINGS_PATH = join(DATA_DIR, "settings.json");
 
-export const VERSION = "1.8.3";
+export const VERSION = "1.9.0";
 export const POLL_MS = 3000;
 export const AUDIO_SOURCE_KEY = "audio:0";
 
-// Load saved settings
+// Load saved settings with validation
 let _savedSettings: any = {};
 try {
   if (await Bun.file(SETTINGS_PATH).exists()) {
-    _savedSettings = JSON.parse(await Bun.file(SETTINGS_PATH).text());
+    const raw = JSON.parse(await Bun.file(SETTINGS_PATH).text());
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      _savedSettings = raw;
+      // Validate denyList structure
+      if (Array.isArray(raw.denyList)) {
+        _savedSettings.denyList = raw.denyList.filter(
+          (r: any) => r && typeof r === "object" && (typeof r.app === "string" || typeof r.title === "string" || typeof r.url === "string")
+        );
+      } else {
+        _savedSettings.denyList = [];
+      }
+    }
   }
 } catch {}
 

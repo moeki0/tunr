@@ -272,7 +272,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   if (name === "subscribe") {
-    const channel = (args as any).channel as string;
+    const channel = String((args as any).channel || "").slice(0, 32);
+    if (!channel || !/^[a-zA-Z0-9_\-]+$/.test(channel)) {
+      return { content: [{ type: "text" as const, text: `Invalid channel name. Use alphanumeric, dash, or underscore (max 32 chars).` }] };
+    }
     const db = openDbWritable();
     if (!db) {
       return { content: [{ type: "text" as const, text: "Database not available. Is the watch daemon running?" }] };
@@ -316,17 +319,27 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const minutes = ((args as any).minutes as number) || 60;
       const limit = ((args as any).limit as number) || 20;
       const since = new Date(Date.now() - minutes * 60_000).toISOString();
-      const appClause = appFilter ? ` AND (app LIKE '%${appFilter.replace(/'/g, "''")}%' OR window_title LIKE '%${appFilter.replace(/'/g, "''")}%')` : "";
-      const channelClause = channelFilter ? ` AND channel_names LIKE '%${channelFilter.replace(/'/g, "''")}%'` : "";
+      // Build parameterized clauses for app/channel filters
+      const extraClauses: string[] = [];
+      const extraParams: any[] = [];
+      if (appFilter) {
+        extraClauses.push(`(app LIKE ? OR window_title LIKE ?)`);
+        extraParams.push(`%${appFilter}%`, `%${appFilter}%`);
+      }
+      if (channelFilter) {
+        extraClauses.push(`channel_names LIKE ?`);
+        extraParams.push(`%${channelFilter}%`);
+      }
+      const extraWhere = extraClauses.length > 0 ? ` AND ${extraClauses.join(" AND ")}` : "";
 
       // Try vector search first
       const queryVec = queryEmbedding(query);
       if (queryVec) {
         const rows = db.prepare(
           `SELECT timestamp, app, window_title, texts, embedding, channel_names FROM screen_states
-           WHERE timestamp > ? AND embedding IS NOT NULL${appClause}${channelClause}
+           WHERE timestamp > ? AND embedding IS NOT NULL${extraWhere}
            ORDER BY timestamp DESC LIMIT 200`
-        ).all(since) as any[];
+        ).all(since, ...extraParams) as any[];
 
         if (rows.length > 0) {
           const scored = rows.map((r) => {
@@ -336,7 +349,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           }).sort((a, b) => b.score - a.score).slice(0, limit);
 
           const result = scored.map((r) => {
-            const texts = JSON.parse(r.texts) as string[];
+            let texts: string[];
+            try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
             const ch = r.channel_names ? ` [${r.channel_names}]` : "";
             return `[${r.timestamp}] ${r.app} — ${r.window_title}${ch} (similarity: ${r.score.toFixed(3)})\n${texts.join("\n")}`;
           }).join("\n\n---\n\n");
@@ -348,16 +362,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       // Fallback to LIKE search
       const rows = db.prepare(
         `SELECT timestamp, app, window_title, texts, channel_names FROM screen_states
-         WHERE timestamp > ? AND (app LIKE ? OR window_title LIKE ? OR texts LIKE ?)${appClause}${channelClause}
+         WHERE timestamp > ? AND (app LIKE ? OR window_title LIKE ? OR texts LIKE ?)${extraWhere}
          ORDER BY timestamp DESC LIMIT ?`
-      ).all(since, `%${query}%`, `%${query}%`, `%${query}%`, limit) as any[];
+      ).all(since, `%${query}%`, `%${query}%`, `%${query}%`, ...extraParams, limit) as any[];
 
       if (rows.length === 0) {
         return { content: [{ type: "text" as const, text: `No screen history matching "${query}" in the last ${minutes} minutes.` }] };
       }
 
       const result = rows.map((r) => {
-        const texts = JSON.parse(r.texts) as string[];
+        let texts: string[];
+        try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
         const ch = r.channel_names ? ` [${r.channel_names}]` : "";
         return `[${r.timestamp}] ${r.app} — ${r.window_title}${ch}\n${texts.join("\n")}`;
       }).join("\n\n---\n\n");
@@ -379,14 +394,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const minutes = ((args as any)?.minutes as number) || 10;
       const limit = ((args as any)?.limit as number) || 20;
       const since = new Date(Date.now() - minutes * 60_000).toISOString();
-      const appClause = appFilter ? ` AND (app LIKE '%${appFilter.replace(/'/g, "''")}%' OR window_title LIKE '%${appFilter.replace(/'/g, "''")}%')` : "";
-      const channelClause = channelFilter ? ` AND channel_names LIKE '%${channelFilter.replace(/'/g, "''")}%'` : "";
+
+      const extraClauses: string[] = [];
+      const extraParams: any[] = [];
+      if (appFilter) {
+        extraClauses.push(`(app LIKE ? OR window_title LIKE ?)`);
+        extraParams.push(`%${appFilter}%`, `%${appFilter}%`);
+      }
+      if (channelFilter) {
+        extraClauses.push(`channel_names LIKE ?`);
+        extraParams.push(`%${channelFilter}%`);
+      }
+      const extraWhere = extraClauses.length > 0 ? ` AND ${extraClauses.join(" AND ")}` : "";
 
       const rows = db.prepare(
         `SELECT timestamp, app, window_title, texts, channel_names FROM screen_states
-         WHERE timestamp > ?${appClause}${channelClause}
+         WHERE timestamp > ?${extraWhere}
          ORDER BY timestamp DESC LIMIT ?`
-      ).all(since, limit) as any[];
+      ).all(since, ...extraParams, limit) as any[];
 
       if (rows.length === 0) {
         return { content: [{ type: "text" as const, text: `No screen history in the last ${minutes} minutes.` }] };
@@ -394,7 +419,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
       const content: any[] = [];
       for (const r of rows) {
-        const texts = JSON.parse(r.texts) as string[];
+        let texts: string[];
+        try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
         const ch = r.channel_names ? ` [${r.channel_names}]` : "";
         content.push({ type: "text" as const, text: `[${r.timestamp}] ${r.app} — ${r.window_title}${ch}\n${texts.join("\n")}` });
       }
@@ -549,11 +575,13 @@ async function pollDb() {
 
       for (const r of screens) {
         lastScreenId = r.id;
-        const chans: string[] = r.channel_names ? JSON.parse(r.channel_names) : [];
+        let chans: string[];
+        try { chans = r.channel_names ? JSON.parse(r.channel_names) : []; } catch { chans = []; }
         const matched = chans.filter(ch => subNames.includes(ch));
         if (matched.length === 0) continue;
 
-        const texts = JSON.parse(r.texts) as string[];
+        let texts: string[];
+        try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
         const lines = texts.join("\n").split("\n");
         const wKey = `${r.pid}:${r.window_index}`;
         const prev = lastNotified.get(wKey);

@@ -19,10 +19,25 @@ import { getChannels, getActiveSubscriptions } from "./lib/rules";
 import { generateEmbedding, getAllWindows, windowKey } from "./lib/capture";
 import { checkForUpdate } from "./lib/update-check";
 
-// Glob match: * matches any sequence of characters
+// Glob match: * matches any sequence of characters (linear scan, no regex)
 function globMatch(pattern: string, value: string): boolean {
-  const regex = new RegExp("^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
-  return regex.test(value);
+  const parts = pattern.split("*");
+  if (parts.length === 1) return pattern === value;
+
+  // First part must match at the start
+  if (!value.startsWith(parts[0])) return false;
+  let pos = parts[0].length;
+
+  // Middle parts must appear in order
+  for (let i = 1; i < parts.length - 1; i++) {
+    const idx = value.indexOf(parts[i], pos);
+    if (idx === -1) return false;
+    pos = idx + parts[i].length;
+  }
+
+  // Last part must match at the end
+  const last = parts[parts.length - 1];
+  return value.length - pos >= last.length && value.endsWith(last);
 }
 
 function isDenied(denyRules: DenyRule[], app: string, title: string, urls: string[]): boolean {
@@ -355,12 +370,14 @@ function App() {
             if (!line.trim()) continue;
             try {
               const chunk = JSON.parse(line);
+              if (!chunk || typeof chunk.file !== "string" || typeof chunk.timestamp !== "string") continue;
               const mp = join(homedir(), ".cache", "whisper-cpp-small.bin");
               const wp = Bun.spawnSync([
                 "whisper-cli", "-m", mp, "-l", "auto", "-f", chunk.file, "-np", "-nt",
               ], { stdout: "pipe", stderr: "pipe" });
-              const transcript = wp.stdout.toString().trim();
               try { unlinkSync(chunk.file); } catch {}
+              if (wp.exitCode !== 0) continue;
+              const transcript = wp.stdout.toString().trim();
               if (transcript) {
                 insertAudioStmt.run(chunk.timestamp, chunk.file, transcript);
                 setLastTranscript(transcript.slice(0, 80));
@@ -900,7 +917,7 @@ function App() {
                     value={newChannelName}
                     onChange={setNewChannelName}
                     onSubmit={(val: string) => {
-                      const name = val.trim();
+                      const name = val.trim().replace(/[^a-zA-Z0-9_\-]/g, "").slice(0, 32);
                       if (name) { try { db.run(`INSERT INTO channels (name) VALUES (?)`, name); } catch {} setChannels(getChannels()); }
                       setChannelCreateMode(false); setNewChannelName("");
                     }}

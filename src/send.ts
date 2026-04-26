@@ -50,5 +50,4 @@ db.prepare(
 
 db.close();
 
-const excerpt = w.texts.join(" ").slice(0, 80);
-console.error(`Sent: ${w.app} · ${excerpt}`);
+console.error(`Sent: ${w.app} · [${w.texts.length} text(s)]`);
