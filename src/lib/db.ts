@@ -19,7 +19,6 @@ db.run(`CREATE TABLE IF NOT EXISTS screen_states (
 )`);
 db.run(`CREATE INDEX IF NOT EXISTS idx_screen_states_timestamp ON screen_states(timestamp)`);
 db.run(`CREATE INDEX IF NOT EXISTS idx_screen_states_app ON screen_states(app)`);
-try { db.run(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_screen_states ON screen_states(timestamp, pid, window_id, window_title)`); } catch {}
 
 try { db.run(`ALTER TABLE screen_states ADD COLUMN embedding BLOB`); } catch {}
 try { db.run(`ALTER TABLE screen_states DROP COLUMN screenshot_path`); } catch {}
@@ -27,6 +26,7 @@ try { db.run(`ALTER TABLE screen_states ADD COLUMN channel_names TEXT`); } catch
 try { db.run(`ALTER TABLE screen_states ADD COLUMN window_id INTEGER DEFAULT 0`); } catch {}
 try { db.run(`ALTER TABLE screen_states ADD COLUMN diff_text TEXT`); } catch {}
 try { db.run(`ALTER TABLE screen_states ADD COLUMN diff_embedding BLOB`); } catch {}
+try { db.run(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_screen_states ON screen_states(timestamp, pid, window_id, window_title)`); } catch {}
 
 db.run(`CREATE TABLE IF NOT EXISTS channels (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

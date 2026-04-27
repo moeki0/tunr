@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "daemon": "bun daemon.ts",
-    "mcp": "bun mcp-server.ts"
+    "mcp": "bun mcp-server.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
