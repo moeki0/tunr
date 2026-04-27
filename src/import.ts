@@ -22,7 +22,7 @@ export async function runImport(args: string[]) {
     `INSERT OR IGNORE INTO screen_states (timestamp, pid, window_index, app, window_title, texts, channel_names, window_id, diff_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertAudio = db.prepare(
-    `INSERT OR IGNORE INTO audio_transcripts (timestamp, audio_path, transcript) VALUES (?, ?, ?)`
+    `INSERT OR IGNORE INTO audio_transcripts (timestamp, audio_path, transcript, source) VALUES (?, ?, ?, ?)`
   );
   const insertIngested = db.prepare(
     `INSERT OR IGNORE INTO ingested (timestamp, source, channel_name, text, meta) VALUES (?, ?, ?, ?, ?)`
@@ -60,7 +60,7 @@ export async function runImport(args: string[]) {
           );
           break;
         case "audio_transcripts":
-          insertAudio.run(row.timestamp, row.audio_path, row.transcript);
+          insertAudio.run(row.timestamp, row.audio_path, row.transcript, row.source ?? "system");
           break;
         case "ingested":
           insertIngested.run(

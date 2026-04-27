@@ -6,9 +6,11 @@ export const DB_PATH = join(DATA_DIR, "tunr.db");
 export const AUDIO_DIR = join(DATA_DIR, "audio");
 export const SETTINGS_PATH = join(DATA_DIR, "settings.json");
 
-export const VERSION = "1.17.0";
+export const VERSION = "1.18.0";
 export const POLL_MS = 3000;
 export const AUDIO_SOURCE_KEY = "audio:0";
+export const MIC_SOURCE_KEY = "mic:0";
+export const MIC_DIR = join(DATA_DIR, "mic");
 
 // Load saved settings with validation
 let _savedSettings: any = {};

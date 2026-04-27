@@ -105,7 +105,7 @@ export async function runExport(args: string[]) {
   }
 
   if (opts.types.has("audio")) {
-    const sql = `SELECT timestamp, audio_path, transcript FROM audio_transcripts WHERE timestamp > ? AND timestamp <= ? ORDER BY timestamp ASC`;
+    const sql = `SELECT timestamp, audio_path, transcript, source FROM audio_transcripts WHERE timestamp > ? AND timestamp <= ? ORDER BY timestamp ASC`;
     for (const r of db.prepare(sql).iterate(sinceIso, untilIso) as any) {
       await write({ table: "audio_transcripts", row: r });
       total++;
