@@ -36,7 +36,13 @@ if (foreground) {
   if (existing) { try { unlinkSync(PID_PATH); } catch {} }
 
   const out = openSync(LOG_PATH, "a");
-  const args = [...process.argv.slice(1), "--foreground"];
+  // In bun-compiled binaries argv[1] is the embedded entrypoint path
+  // (e.g. /$bunfs/root/cli.ts) which the binary re-injects automatically
+  // when spawned. Passing it through duplicates the slot and pushes the
+  // real subcommand off argv[2]. In bun runtime mode we need to keep it.
+  const compiled = process.argv[1]?.startsWith("/$bunfs/");
+  const userArgs = compiled ? process.argv.slice(2) : process.argv.slice(1);
+  const args = [...userArgs, "--foreground"];
   const child = spawn(process.execPath, args, {
     detached: true,
     stdio: ["ignore", out, out],
