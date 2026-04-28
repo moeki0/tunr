@@ -92,18 +92,23 @@ brew install whisper-cpp
 ### Start the engine
 
 ```bash
-tunr start
+tunr start            # spawn the engine as a background daemon
+tunr status           # check whether it's running
+tunr stop             # stop it
+tunr start --foreground   # run inline (debug)
 ```
 
-Runs the capture engine in the foreground (no TUI). It polls windows, records assigned sources, and streams audio. Logs status lines to stdout. Ctrl-C to stop.
+`tunr start` daemonizes: it writes a PID file to `<DATA_DIR>/tunr.pid`, redirects stdout/stderr to `<DATA_DIR>/tunr.log`, and returns immediately. The engine polls windows, records assigned sources, and streams audio.
 
-All controls — channels, source assignment, deny rules, settings — are CLI subcommands you run from another shell while `tunr start` is up.
+All controls — channels, source assignment, deny rules, settings — are CLI subcommands you run anytime while the daemon is up.
 
 ### CLI
 
 | Command | Description |
 |---------|-------------|
-| `tunr start` | Run the foreground capture engine |
+| `tunr start [--foreground]` | Start the daemon (or run inline for debug) |
+| `tunr stop` | Stop the daemon |
+| `tunr status` | Print daemon status |
 | `tunr log [-f\|--follow]` | Print recent captures (tail with `--follow`) |
 | `tunr sources [list] [--json]` | List currently detected windows + their channel assignments (TSV) |
 | `tunr sources assign <window-key> <channel>` | Assign a window to a channel |

@@ -17,6 +17,16 @@ switch (command) {
   case "start":
     await import("./start.ts");
     break;
+  case "stop": {
+    const { runStop } = await import("./commands.ts");
+    await runStop(args);
+    break;
+  }
+  case "status": {
+    const { runStatus } = await import("./commands.ts");
+    runStatus(args);
+    break;
+  }
   case "ingest":
     await import("./ingest.ts");
     break;
@@ -75,7 +85,9 @@ switch (command) {
     console.log(`tunr — Screen context provider for Claude Code
 
 Usage:
-  tunr start                  Run the foreground capture engine (no TUI)
+  tunr start [--foreground]   Start the capture engine as a daemon (or foreground for debug)
+  tunr stop                   Stop the running daemon
+  tunr status                 Show daemon status
   tunr log [-f|--follow]      Print recent captures (tail with --follow)
   tunr sources [list] [--json]            List live windows + assignments (TSV)
   tunr sources assign <key> <channel>     Assign a window to a channel

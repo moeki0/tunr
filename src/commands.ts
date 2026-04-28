@@ -9,7 +9,8 @@ import type { DenyRule } from "./lib/types";
 
 // --- helpers ---
 
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
+import { PID_PATH, LOG_PATH, isAlive, readPid } from "./lib/daemon";
 
 function loadSettingsRaw(): any {
   try {
@@ -61,6 +62,39 @@ function parseValue(s: string): any {
   if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
   try { return JSON.parse(s); } catch {}
   return s;
+}
+
+// --- stop / status ---
+
+export async function runStop(_args: string[]) {
+  const pid = readPid();
+  if (!pid || !isAlive(pid)) {
+    console.log("tunr is not running");
+    if (pid) { try { unlinkSync(PID_PATH); } catch {} }
+    return;
+  }
+  process.kill(pid, "SIGTERM");
+  for (let i = 0; i < 50; i++) {
+    if (!isAlive(pid)) break;
+    await Bun.sleep(100);
+  }
+  if (isAlive(pid)) {
+    process.kill(pid, "SIGKILL");
+    console.log(`force-killed pid ${pid}`);
+  } else {
+    console.log(`stopped pid ${pid}`);
+  }
+}
+
+export function runStatus(_args: string[]) {
+  const pid = readPid();
+  if (pid && isAlive(pid)) {
+    console.log(`running (pid ${pid})`);
+    console.log(`logs: ${LOG_PATH}`);
+  } else {
+    console.log("not running");
+    process.exit(1);
+  }
 }
 
 // --- sources ---
