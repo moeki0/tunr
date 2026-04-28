@@ -65,6 +65,14 @@ describe("isDenied", () => {
     expect(isDenied([rule], "Chrome", "GitHub", [])).toBe(false);
   });
 
+  test("url rule with empty urls falls back to denying when other constraints match", () => {
+    // AppleScript JS can intermittently return no URLs; rather than leak the page,
+    // treat unverifiable URLs as denied when app/title constraints already match.
+    expect(isDenied([{ app: "Chrome", url: "https://scrapbox.io/me/" }], "Chrome", "me", [])).toBe(true);
+    expect(isDenied([{ app: "Chrome", url: "https://scrapbox.io/me/" }], "Safari", "me", [])).toBe(false);
+    expect(isDenied([{ url: "https://scrapbox.io/me/" }], "Chrome", "me", [])).toBe(true);
+  });
+
   test("multiple rules: any matching rule denies (OR logic across rules)", () => {
     const rules = [{ app: "Slack" }, { title: "*secret*" }];
     expect(isDenied(rules, "Slack", "X", [])).toBe(true);

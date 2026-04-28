@@ -21,7 +21,12 @@ export function isDenied(denyRules: DenyRule[], app: string, title: string, urls
   return denyRules.some(rule => {
     if (rule.app && !globMatch(rule.app, app)) return false;
     if (rule.title && !globMatch(rule.title, title)) return false;
-    if (rule.url && !urls.some(u => globMatch(rule.url!, u))) return false;
+    if (rule.url) {
+      // Conservative deny: if URL info is unavailable (e.g. AppleScript JS hiccup)
+      // but app/title constraints already match, treat as denied — better to skip
+      // a record than leak a page the user explicitly excluded.
+      if (urls.length > 0 && !urls.some(u => globMatch(rule.url!, u))) return false;
+    }
     return !!(rule.app || rule.title || rule.url);
   });
 }
