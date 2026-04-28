@@ -4,6 +4,8 @@ This is a runbook for **Claude Code** to install and onboard a user onto tunr fr
 
 Audience: Claude Code (the CLI agent). The user's role is to grant permissions and confirm choices.
 
+> **Before you start — permission-bypass warning.** If this Claude Code session is running with tool permission prompts disabled (e.g. `--dangerously-skip-permissions` / "bypass permissions" / YOLO mode / a blanket allow-all in `settings.json`), **stop and warn the user**. tunr setup runs `defaults write`, edits MCP config, starts a background daemon, and (optionally) configures system audio routing — these should each get a permission prompt. Ask the user to re-run in normal permission mode before continuing. Proceed only if the user explicitly confirms they want to skip prompts anyway.
+
 ---
 
 ## 0. Prerequisites check
