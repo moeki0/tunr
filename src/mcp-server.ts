@@ -65,6 +65,17 @@ function queryEmbedding(text: string): Float64Array | null {
 import { cosineSimilarity, blobToFloat64Array } from "./lib/embedding";
 import { makeDiff } from "./lib/unified-diff";
 
+function formatLocal(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const tzMin = -d.getTimezoneOffset();
+  const sign = tzMin >= 0 ? "+" : "-";
+  const abs = Math.abs(tzMin);
+  const tz = `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${tz}`;
+}
+
 const mcp = new Server(
   { name: "tunr", version: "1.1.0" },
   {
@@ -432,13 +443,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           const result = scored.map((r) => {
             if (r._type === "ingested") {
               const ch = r.channel_name ? ` [${r.channel_name}]` : "";
-              return `[${r.timestamp}] ingested:${r.source}${ch} (${r.matchType}: ${r.score.toFixed(3)})\n${r.text}`;
+              return `[${formatLocal(r.timestamp)}] ingested:${r.source}${ch} (${r.matchType}: ${r.score.toFixed(3)})\n${r.text}`;
             }
             let texts: string[];
             try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
             const ch = r.channel_names ? ` [${r.channel_names}]` : "";
             const diff = r.diff_text ? `\n[diff]\n${r.diff_text}` : "";
-            return `[${r.timestamp}] ${r.app} — ${r.window_title}${ch} (${r.matchType}: ${r.score.toFixed(3)})${diff}\n${texts.join("\n")}`;
+            return `[${formatLocal(r.timestamp)}] ${r.app} — ${r.window_title}${ch} (${r.matchType}: ${r.score.toFixed(3)})${diff}\n${texts.join("\n")}`;
           }).join("\n\n---\n\n");
 
           return { content: [{ type: "text" as const, text: result }] };
@@ -478,13 +489,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const result = rows.map((r) => {
         if (r._type === "ingested") {
           const ch = r.channel_name ? ` [${r.channel_name}]` : "";
-          return `[${r.timestamp}] ingested:${r.source}${ch}\n${r.text}`;
+          return `[${formatLocal(r.timestamp)}] ingested:${r.source}${ch}\n${r.text}`;
         }
         let texts: string[];
         try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
         const ch = r.channel_names ? ` [${r.channel_names}]` : "";
         const diff = r.diff_text ? `\n[diff]\n${r.diff_text}` : "";
-        return `[${r.timestamp}] ${r.app} — ${r.window_title}${ch}${diff}\n${texts.join("\n")}`;
+        return `[${formatLocal(r.timestamp)}] ${r.app} — ${r.window_title}${ch}${diff}\n${texts.join("\n")}`;
       }).join("\n\n---\n\n");
 
       return { content: [{ type: "text" as const, text: result }] };
@@ -550,12 +561,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       for (const r of allRows) {
         if (r._type === "ingested") {
           const ch = r.channel_name ? ` [${r.channel_name}]` : "";
-          content.push({ type: "text" as const, text: `[${r.timestamp}] ingested:${r.source}${ch}\n${r.text}` });
+          content.push({ type: "text" as const, text: `[${formatLocal(r.timestamp)}] ingested:${r.source}${ch}\n${r.text}` });
         } else {
           let texts: string[];
           try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
           const ch = r.channel_names ? ` [${r.channel_names}]` : "";
-          content.push({ type: "text" as const, text: `[${r.timestamp}] ${r.app} — ${r.window_title}${ch}\n${texts.join("\n")}` });
+          content.push({ type: "text" as const, text: `[${formatLocal(r.timestamp)}] ${r.app} — ${r.window_title}${ch}\n${texts.join("\n")}` });
         }
       }
 
@@ -589,7 +600,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       const result = rows.map((r) =>
-        `[${r.timestamp}] [${r.source || "system"}] ${r.transcript}`
+        `[${formatLocal(r.timestamp)}] [${r.source || "system"}] ${r.transcript}`
       ).join("\n\n---\n\n");
 
       return { content: [{ type: "text" as const, text: result }] };
@@ -623,7 +634,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       const result = rows.map((r) =>
-        `[${r.timestamp}] [${r.source || "system"}] ${r.transcript}`
+        `[${formatLocal(r.timestamp)}] [${r.source || "system"}] ${r.transcript}`
       ).join("\n\n---\n\n");
 
       return { content: [{ type: "text" as const, text: result }] };
@@ -658,9 +669,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (isInitial) {
           let texts: string[];
           try { texts = JSON.parse(r.texts) as string[]; } catch { texts = []; }
-          return `[${r.timestamp}] ${r.app} — ${r.window_title} (initial)\n${texts.join("\n")}`;
+          return `[${formatLocal(r.timestamp)}] ${r.app} — ${r.window_title} (initial)\n${texts.join("\n")}`;
         } else {
-          return `[${r.timestamp}] ${r.app} — ${r.window_title} (diff)\n${r.diff_text}`;
+          return `[${formatLocal(r.timestamp)}] ${r.app} — ${r.window_title} (diff)\n${r.diff_text}`;
         }
       }).join("\n\n---\n\n");
 
