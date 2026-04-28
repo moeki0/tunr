@@ -882,10 +882,14 @@ function App() {
   const visibleCaptures = captures.slice(feedScroll, feedScroll + feedHeight);
 
   const formatTime = (ts: string) => {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return ts;
     const today = localDateStr(new Date());
-    const date = ts.slice(0, 10);
-    if (date === today) return ts.slice(11, 19);
-    return date.slice(5) + " " + ts.slice(11, 16);
+    const date = localDateStr(d);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    if (date === today) return hms;
+    return date.slice(5) + " " + hms.slice(0, 5);
   };
 
   const CaptureRow = ({ cap, index }: { cap: Capture; index: number }) => {
@@ -948,7 +952,7 @@ function App() {
         </Box>
         <Box borderStyle="round" borderColor="magenta" flexDirection="column" paddingX={1} paddingY={0} marginX={1}>
           <Box gap={2}>
-            <Text color="gray">{cap.timestamp.slice(0, 19)}</Text>
+            <Text color="gray">{(() => { const d = new Date(cap.timestamp); if (isNaN(d.getTime())) return cap.timestamp; const p = (n: number) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; })()}</Text>
             <Text color={isAudio ? "magenta" : isIngested ? "yellow" : "cyan"} bold>{isAudio ? "♪ AUDIO" : isIngested ? "⇥ INGESTED" : "▣ SCREEN"}</Text>
           </Box>
 
@@ -1191,7 +1195,7 @@ function App() {
             ) : visibleCals.map((cap, i) => {
               const actualIdx = calFeedScroll + i;
               const sel = actualIdx === calFeedIndex;
-              const time = cap.timestamp.slice(11, 19);
+              const time = (() => { const d = new Date(cap.timestamp); if (isNaN(d.getTime())) return cap.timestamp.slice(11, 19); const p = (n: number) => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; })();
               const isAudio = cap.type === "audio";
               return (
                 <Box key={cap.id} paddingLeft={1}>
