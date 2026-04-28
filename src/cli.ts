@@ -50,6 +50,11 @@ switch (command) {
     await runLog(args);
     break;
   }
+  case "rm": {
+    const { runRm } = await import("./commands.ts");
+    runRm(args);
+    break;
+  }
   case "config": {
     const { runConfig } = await import("./commands.ts");
     runConfig(args);
@@ -88,7 +93,8 @@ Usage:
   tunr start [--foreground]   Start the capture engine as a daemon (or foreground for debug)
   tunr stop                   Stop the running daemon
   tunr status                 Show daemon status
-  tunr log [-f|--follow]      Print recent captures (tail with --follow)
+  tunr log [-f|--follow]      Print recent captures (tail with --follow). Each line starts with id (s<n>=screen, a<n>=audio)
+  tunr rm <id> [<id>...]      Delete captures by id (e.g. tunr rm s123 a45)
   tunr sources [list] [--json]            List live windows + assignments (TSV)
   tunr sources assign <key> <channel>     Assign a window to a channel
   tunr sources unassign <key> <channel>   Unassign

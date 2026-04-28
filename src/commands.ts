@@ -287,12 +287,45 @@ function printScreenRow(r: any) {
   try { channels = JSON.parse(r.channel_names ?? "[]"); } catch {}
   const ch = channels.length ? channels.join(",") : "-";
   const excerpt = texts.join(" ").slice(0, 80).replace(/\s+/g, " ");
-  console.log(`${r.timestamp}\tscreen\t${ch}\t${r.app}\t${excerpt}`);
+  console.log(`s${r.id}\t${r.timestamp}\tscreen\t${ch}\t${r.app}\t${excerpt}`);
 }
 
 function printAudioRow(r: any) {
   const excerpt = r.transcript.slice(0, 80).replace(/\s+/g, " ");
-  console.log(`${r.timestamp}\taudio:${r.source}\t-\t-\t${excerpt}`);
+  console.log(`a${r.id}\t${r.timestamp}\taudio:${r.source}\t-\t-\t${excerpt}`);
+}
+
+// --- rm ---
+
+export function runRm(args: string[]) {
+  if (args.length === 0) {
+    console.error("usage: tunr rm <id> [<id> ...]   (id format: s123 for screen, a45 for audio)");
+    process.exit(1);
+  }
+  let removed = 0;
+  for (const raw of args) {
+    const m = /^([sa])(\d+)$/.exec(raw);
+    if (!m) {
+      console.error(`skip: invalid id "${raw}" (expected s<n> or a<n>)`);
+      continue;
+    }
+    const kind = m[1];
+    const id = parseInt(m[2], 10);
+    if (kind === "s") {
+      const row = db.prepare(`SELECT screenshot_path FROM screen_states WHERE id = ?`).get(id) as any;
+      if (!row) { console.error(`skip: s${id} not found`); continue; }
+      if (row.screenshot_path) {
+        try { unlinkSync(row.screenshot_path); } catch {}
+      }
+      const r = db.run(`DELETE FROM screen_states WHERE id = ?`, [id]);
+      if (r.changes > 0) { console.log(`removed s${id}`); removed++; }
+    } else {
+      const r = db.run(`DELETE FROM audio_transcripts WHERE id = ?`, [id]);
+      if (r.changes > 0) { console.log(`removed a${id}`); removed++; }
+      else console.error(`skip: a${id} not found`);
+    }
+  }
+  if (removed === 0) process.exit(1);
 }
 
 // --- config ---
